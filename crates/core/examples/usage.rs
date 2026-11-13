@@ -47,7 +47,15 @@ fn run(db: &Path, home: &Path) -> Result<(), UsageError> {
 
     // Projects come from the cwd of the sessions that used a skill, as the design says.
     env.projects = index.known_projects()?.into_iter().filter(|p| p != home).collect();
-    let snap = snapshot(&env);
+    let scan_env = Env { home: env.home.clone(), projects: env.projects.clone(), jstack_root: env.jstack_root.clone() };
+    let scratch = std::env::temp_dir().join("skilltab-usage-example");
+    let snap = match Skilltab::open(scan_env, scratch) {
+        Ok(app) => app.snapshot(),
+        Err(e) => {
+            eprintln!("scan failed: {e:?}");
+            std::process::exit(1);
+        }
+    };
     println!("\nsnapshot: {} bodies, {} mounts, {} project roots checked", snap.bodies.len(), snap.mounts.len(), env.projects.len());
 
     println!("\ntracking since (earliest event per harness)");

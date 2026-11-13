@@ -18,7 +18,7 @@ use crate::harness::{Harness, InvocationKind, ParserState, RawEvent, SessionPars
 use crate::model::{norm_key, HarnessId, InvocationKey, Tally, Timestamp, TrackingSince};
 use crate::Env;
 use rayon::prelude::*;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
