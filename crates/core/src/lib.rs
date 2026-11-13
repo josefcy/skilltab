@@ -23,6 +23,7 @@ pub use model::{
 };
 pub use model::{HarnessId, HarnessInfo, LinkPath, ProjectRoot, RealDir, Tally, TrackingSince};
 pub use harness::InvocationKind;
+pub use jstack::{fetch as jstack_fetch, report as jstack_report, Absence, DeclaredMissing, DeclaredSource, Drift, JstackAction, JstackCommand, JstackError, JstackReport, JstackRelation, NotInstalled, RepoSkill, RepoState, Upstream};
 pub use usage::{IngestProgress, IngestReport, UsageError, UsageIndex, UsagePoint};
 
 pub struct Env {
