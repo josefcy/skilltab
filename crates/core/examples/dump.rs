@@ -4,13 +4,8 @@
 use serde_json::{json, Value};
 use skilltab_core::*;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-
-const TRANSCRIPT_LINES: usize = 8;
-const TRANSCRIPT_HEAD_BYTES: u64 = 256 * 1024;
 
 fn main() {
     let json_out = std::env::args().any(|a| a == "--json");
@@ -19,60 +14,19 @@ fn main() {
         std::process::exit(2);
     };
 
-    let projects = project_candidates(&home);
-    let env = Env { home: home.clone(), projects: projects.clone(), jstack_root: Some(home.join("jstack")) };
+    let project_count = discover_projects(&home).len();
+    let env = Env { home: home.clone(), projects: Vec::new(), jstack_root: Some(home.join("jstack")) };
 
     let started = Instant::now();
-    let snap = snapshot(&env);
+    let Ok(app) = Skilltab::open(env, std::env::temp_dir().join("skilltab-dump")) else { std::process::exit(1) };
+    let snap = app.snapshot();
     let elapsed = started.elapsed();
 
     if json_out {
         println!("{}", serde_json::to_string_pretty(&snapshot_json(&snap)).unwrap_or_default());
     } else {
-        summary(&snap, &home, projects.len(), elapsed.as_secs_f64() * 1000.0);
+        summary(&snap, &home, project_count, elapsed.as_secs_f64() * 1000.0);
     }
-}
-
-/// Real project roots named by transcript `cwd` values: each cwd walked up to its git root.
-fn project_candidates(home: &Path) -> Vec<PathBuf> {
-    let mut cwds: BTreeSet<PathBuf> = BTreeSet::new();
-    let Ok(slugs) = std::fs::read_dir(home.join(".claude").join("projects")) else { return Vec::new() };
-    for slug in slugs.flatten().filter(|s| s.path().is_dir()) {
-        let Ok(files) = std::fs::read_dir(slug.path()) else { continue };
-        for f in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "jsonl")) {
-            cwds.extend(first_cwds(&f));
-        }
-    }
-
-    let mut roots: BTreeMap<String, PathBuf> = BTreeMap::new();
-    for cwd in cwds.into_iter().filter(|c| c.is_dir()) {
-        let root = cwd.ancestors().find(|a| a.join(".git").exists()).unwrap_or(&cwd).to_path_buf();
-        if root != home {
-            roots.entry(root.to_string_lossy().to_lowercase()).or_insert(root);
-        }
-    }
-    roots.into_values().collect()
-}
-
-/// Reads only a bounded head of the file and only the first few lines, and keeps only `cwd`.
-fn first_cwds(transcript: &Path) -> Vec<PathBuf> {
-    let Ok(file) = File::open(transcript) else { return Vec::new() };
-    let mut reader = BufReader::new(file.take(TRANSCRIPT_HEAD_BYTES));
-    let mut out = Vec::new();
-    let mut buf = Vec::new();
-    for _ in 0..TRANSCRIPT_LINES {
-        buf.clear();
-        match reader.read_until(b'\n', &mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        if let Ok(v) = serde_json::from_slice::<Value>(&buf) {
-            if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
-                out.push(PathBuf::from(cwd));
-            }
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------- summary
