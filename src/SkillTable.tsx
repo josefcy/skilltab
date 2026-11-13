@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { ShelfRow, SkillRow } from "./bindings";
 import type { Sort, SortKey } from "./filters";
 import { ago } from "./format";
-import { Empty, HarnessChip } from "./ui";
+import { Empty, HarnessChip, JstackBadge } from "./ui";
 
 type Props = {
   rows: SkillRow[];
@@ -87,6 +87,7 @@ export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort,
               >
                 <td className="c-name">
                   <span className="name">{r.name}</span>
+                  {r.jstack && <JstackBadge j={r.jstack} />}
                   {r.flags.length > 0 && (
                     <span className="flag" title={r.flags.join(", ")}>
                       !

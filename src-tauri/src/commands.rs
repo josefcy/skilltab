@@ -2,7 +2,7 @@
 //! `collect_commands!` drives both the IPC handler and `src/bindings.ts`, so the two cannot disagree.
 
 use serde::{Deserialize, Serialize};
-use skilltab_core::view::{ActionRequest, AliasSuggestionView, ApplyReport, CoreError, Inventory, JstackView, PlanView, RefreshReport, SkillDetail};
+use skilltab_core::view::{ActionRequest, AliasPick, AliasSuggestionView, ApplyReport, CoreError, Inventory, JstackView, PlanView, RefreshReport, SkillDetail};
 use skilltab_core::Skilltab;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager, State};
@@ -87,6 +87,15 @@ fn confirm_alias(handle: AppHandle, harness: String, from: String, to: String) -
     Ok(report)
 }
 
+/// Confirm-all sends every shown suggestion at once, so it costs one rescan.
+#[tauri::command(async)]
+#[specta::specta]
+fn confirm_aliases(handle: AppHandle, picks: Vec<AliasPick>) -> Result<RefreshReport, CoreError> {
+    let report = handle.state::<Skilltab>().confirm_aliases(&picks)?;
+    let _ = InventoryChanged { revision: report.revision }.emit(&handle);
+    Ok(report)
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 fn remove_alias(handle: AppHandle, harness: String, from: String) -> Result<RefreshReport, CoreError> {
@@ -122,6 +131,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             jstack_fetch,
             alias_suggestions,
             confirm_alias,
+            confirm_aliases,
             remove_alias
         ])
         .events(collect_events![InventoryChanged])

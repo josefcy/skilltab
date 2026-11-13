@@ -10,6 +10,7 @@ export type Filters = {
   bundle: string;
   owner: string;
   origin: string;
+  jstack: string;
   unused: boolean;
   problems: boolean;
 };
@@ -21,6 +22,7 @@ export const NO_FILTERS: Filters = {
   bundle: "",
   owner: "",
   origin: "",
+  jstack: "",
   unused: false,
   problems: false,
 };
@@ -33,6 +35,7 @@ export function activeFilterCount(f: Filters): number {
     (f.bundle ? 1 : 0) +
     (f.owner ? 1 : 0) +
     (f.origin ? 1 : 0) +
+    (f.jstack ? 1 : 0) +
     (f.unused ? 1 : 0) +
     (f.problems ? 1 : 0)
   );
@@ -44,6 +47,7 @@ function haystack(r: SkillRow): string {
     r.description ?? "",
     r.origin.label,
     r.origin.detail ?? "",
+    r.jstack ? `jstack ${r.jstack.label}` : "",
     ...r.harnesses.map((h) => h.label),
     ...r.scopes.map((s) => s.label),
     ...r.owners.map((o) => o.label),
@@ -58,6 +62,7 @@ export function matches(r: SkillRow, f: Filters): boolean {
   if (f.bundle && !r.bundles.includes(f.bundle)) return false;
   if (f.owner && !r.owners.some((o) => o.id === f.owner)) return false;
   if (f.origin && r.origin.id !== f.origin) return false;
+  if (f.jstack && !(f.jstack === "drifted" ? r.jstack?.drifted : r.jstack?.kind === f.jstack)) return false;
   if (f.unused && !r.usage.unused) return false;
   if (f.problems && r.flags.length === 0) return false;
   const terms = f.text.toLowerCase().split(/\s+/).filter(Boolean);

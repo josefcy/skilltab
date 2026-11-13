@@ -100,6 +100,9 @@ export function Toolbar({ inv, filters, onChange, shown, searchRef }: Props) {
         <Select label="Bundle" value={filters.bundle} values={inv.facets.bundles} onChange={(v) => set({ bundle: v })} />
         <Select label="Owner" value={filters.owner} values={inv.facets.owners} onChange={(v) => set({ owner: v })} />
         <Select label="Origin" value={filters.origin} values={inv.facets.origins} onChange={(v) => set({ origin: v })} />
+        {inv.facets.jstack.length > 0 && (
+          <Select label="jstack" value={filters.jstack} values={inv.facets.jstack} onChange={(v) => set({ jstack: v })} />
+        )}
         <span className="spacer" />
         <span className="shown" aria-live="polite">
           {shown === inv.rows.length ? `${shown} skills` : `${shown} of ${inv.rows.length} skills`}

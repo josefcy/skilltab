@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
-use view::{ActionRequest, AliasSuggestionView, ApplyOutcomeKind, ApplyReport, CoreError, Inventory, JstackView, PlanView, RefreshReport, SkillDetail, Tallies};
+use view::{ActionRequest, AliasPick, AliasSuggestionView, ApplyOutcomeKind, ApplyReport, CoreError, Inventory, JstackView, PlanView, RefreshReport, SkillDetail, Tallies};
 
 pub use projects::discover_projects;
 
@@ -133,15 +133,25 @@ impl Skilltab {
     /// Counts usage under `from` for the installed skill that answers to `to`, then rescans so the
     /// totals and the revision move. Keys are the wire strings from `alias_suggestions`.
     pub fn confirm_alias(&self, harness: &str, from: &str, to: &str) -> Result<RefreshReport, CoreError> {
-        let (harness, from, to) = parse_alias_ids(harness, from, to)?;
+        self.confirm_aliases(&[AliasPick { harness: harness.to_owned(), from: from.to_owned(), to: to.to_owned() }])
+    }
+
+    /// `confirm_alias` for several keys under one rescan, so confirming a whole list is not one scan per key.
+    /// Every pick is checked first, and one bad pick changes nothing.
+    pub fn confirm_aliases(&self, picks: &[AliasPick]) -> Result<RefreshReport, CoreError> {
         let snap = self.read().snapshot;
-        if snap.resolve(harness, &from).is_some() {
-            return Err(CoreError::Invalid { message: "that key still names an installed skill".to_owned() });
+        let mut aliases = Vec::with_capacity(picks.len());
+        for pick in picks {
+            let (harness, from, to) = parse_alias_ids(&pick.harness, &pick.from, &pick.to)?;
+            if snap.resolve(harness, &from).is_some() {
+                return Err(CoreError::Invalid { message: "that key still names an installed skill".to_owned() });
+            }
+            if snap.resolve(harness, &to).is_none() {
+                return Err(CoreError::Invalid { message: "no installed skill answers to the target".to_owned() });
+            }
+            aliases.push(Alias { harness, from, to });
         }
-        if snap.resolve(harness, &to).is_none() {
-            return Err(CoreError::Invalid { message: "no installed skill answers to the target".to_owned() });
-        }
-        self.edit_aliases(|store| store.add(Alias { harness, from, to }))
+        self.edit_aliases(|store| aliases.into_iter().fold(false, |changed, a| store.add(a) | changed))
     }
 
     /// Undoes a confirmed alias, so the old key reads as a ghost again.
@@ -668,6 +678,43 @@ mod tests {
         assert_eq!(total(&app), 1);
         assert_eq!(app.alias_suggestions().len(), 1);
         assert!(app.inventory().aliases.is_empty());
+    }
+
+    #[test]
+    fn confirming_a_list_of_aliases_is_one_rescan_and_one_bad_pick_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        skill(tmp.path(), ".claude/skills/tdd", "tdd");
+        skill(tmp.path(), ".claude/skills/grill", "grill");
+        let projects = tmp.path().join(".claude/projects/p");
+        fs::create_dir_all(&projects).unwrap();
+        let slash = |uuid: &str, name: &str| {
+            serde_json::json!({"type": "user", "uuid": uuid, "sessionId": "s", "cwd": "D:\\p", "timestamp": "2026-11-01T10:00:00.000Z",
+                "message": {"content": format!("<command-name>/{name}</command-name>")}})
+            .to_string()
+        };
+        let lines = [slash("u1", "old:tdd"), slash("u2", "old:tdd"), slash("u3", "old:grill")];
+        fs::write(projects.join("a.jsonl"), lines.join("\n") + "\n").unwrap();
+
+        let app = open(tmp.path());
+        let picks: Vec<AliasPick> = app
+            .alias_suggestions()
+            .iter()
+            .map(|s| AliasPick { harness: s.harness.id.clone(), from: s.from.clone(), to: s.to.clone() })
+            .collect();
+        assert_eq!(picks.len(), 2);
+
+        let mut bad = picks.clone();
+        bad.push(AliasPick { harness: "claude-code".into(), from: "name:old:nothing".into(), to: "name:missing".into() });
+        assert!(matches!(app.confirm_aliases(&bad), Err(CoreError::Invalid { .. })));
+        assert!(app.inventory().aliases.is_empty());
+
+        let before = app.inventory().revision;
+        assert_eq!(app.confirm_aliases(&picks).unwrap().revision, before + 1);
+        let inv = app.inventory();
+        assert_eq!(inv.aliases.len(), 2);
+        assert!(app.alias_suggestions().is_empty());
+        let total = |name: &str| inv.rows.iter().find(|r| r.name == name).map(|r| r.usage.total);
+        assert_eq!((total("tdd"), total("grill")), (Some(2), Some(1)));
     }
 
     #[test]

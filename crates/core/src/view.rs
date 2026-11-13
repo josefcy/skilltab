@@ -862,6 +862,15 @@ pub struct AliasSuggestionView {
     pub reason: String,
 }
 
+/// One suggestion to confirm, as `confirm_aliases` takes it. The strings are the wire forms from `AliasSuggestionView`.
+#[derive(Deserialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AliasPick {
+    pub harness: String,
+    pub from: String,
+    pub to: String,
+}
+
 /// A confirmed link. `target_body` is None when the target skill is no longer installed.
 #[derive(Serialize, Type, Clone)]
 #[serde(rename_all = "camelCase")]

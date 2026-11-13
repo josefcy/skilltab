@@ -19,6 +19,8 @@ export const commands = {
 	jstackFetch: (options?: InvokeOptions) => typedError<RefreshReport, CoreError>(__TAURI_INVOKE("jstack_fetch", undefined, options)),
 	aliasSuggestions: (options?: InvokeOptions) => __TAURI_INVOKE<AliasSuggestionView[]>("alias_suggestions", undefined, options),
 	confirmAlias: (harness: string, from: string, to: string, options?: InvokeOptions) => typedError<RefreshReport, CoreError>(__TAURI_INVOKE("confirm_alias", { harness, from, to }, options)),
+	/**  Confirm-all sends every shown suggestion at once, so it costs one rescan. */
+	confirmAliases: (picks: AliasPick[], options?: InvokeOptions) => typedError<RefreshReport, CoreError>(__TAURI_INVOKE("confirm_aliases", { picks }, options)),
 	removeAlias: (harness: string, from: string, options?: InvokeOptions) => typedError<RefreshReport, CoreError>(__TAURI_INVOKE("remove_alias", { harness, from }, options)),
 };
 
@@ -42,6 +44,13 @@ export type ActionRequest = { kind: "removeMount"; mount: string } | { kind: "de
 { kind: "jstackPull" } | 
 /**  Install, or update, skills from one line of skill-sources.txt. Both must be declared there. */
 { kind: "jstackInstallDeclared"; source: string; skills: string[] };
+
+/**  One suggestion to confirm, as `confirm_aliases` takes it. The strings are the wire forms from `AliasSuggestionView`. */
+export type AliasPick = {
+	harness: string,
+	from: string,
+	to: string,
+};
 
 /**  A proposed link from a ghost usage key to an installed skill. Nothing is merged until the user confirms it. */
 export type AliasSuggestionView = {
