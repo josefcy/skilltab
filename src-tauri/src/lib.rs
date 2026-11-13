@@ -1,6 +1,7 @@
 mod commands;
 
 use skilltab_core::{Env, Skilltab};
+use std::path::PathBuf;
 use tauri::{Manager, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -18,10 +19,14 @@ pub fn run() {
         .setup(move |app| {
             builder.mount_events(app);
 
-            let home = app.path().home_dir()?;
+            // SKILLTAB_HOME points the whole app, its own data included, at another home, so it can be
+            // exercised against a fixture without touching the real skill folders.
+            let (home, data_dir) = match std::env::var_os("SKILLTAB_HOME").map(PathBuf::from) {
+                Some(home) => (home.clone(), home.join(".skilltab-data")),
+                None => (app.path().home_dir()?, app.path().local_data_dir()?.join("skilltab")),
+            };
             let jstack = home.join("jstack");
             let env = Env { home, projects: Vec::new(), jstack_root: jstack.is_dir().then_some(jstack) };
-            let data_dir = app.path().local_data_dir()?.join("skilltab");
             app.manage(Skilltab::open(env, data_dir).map_err(|e| format!("{e:?}"))?);
             Ok(())
         })

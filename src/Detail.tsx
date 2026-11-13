@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { commands, type CoreError, type MountDetail, type SkillDetail, type UsageSummary } from "./bindings";
+import { commands, type ActionRequest, type BundleRow, type CoreError, type MountDetail, type SkillDetail, type UsageSummary } from "./bindings";
 import { ago, date } from "./format";
 import { HarnessChip } from "./ui";
 
@@ -16,7 +16,9 @@ function errorText(e: CoreError): string {
   return e.kind === "unknownId" ? "This skill is no longer installed." : e.message;
 }
 
-export function Detail({ id, revision }: { id: string; revision: number }) {
+type Manage = (request: ActionRequest) => void;
+
+export function Detail({ id, revision, bundles, onManage }: { id: string; revision: number; bundles: BundleRow[]; onManage: Manage }) {
   const [load, setLoad] = useState<Load>({ status: "loading" });
 
   useEffect(() => {
@@ -41,19 +43,17 @@ export function Detail({ id, revision }: { id: string; revision: number }) {
       </aside>
     );
   }
-  return <DetailBody d={load.detail} />;
+  return <DetailBody d={load.detail} bundles={bundles} onManage={onManage} />;
 }
 
-function DetailBody({ d }: { d: SkillDetail }) {
+function DetailBody({ d, bundles, onManage }: { d: SkillDetail; bundles: BundleRow[]; onManage: Manage }) {
   const { row } = d;
   return (
     <aside className="detail">
       <header className="detail-head">
         <div className="detail-title">
           <h2>{row.name}</h2>
-          <button type="button" className="manage" disabled title="Deleting and disabling arrive in the next release">
-            Manage…
-          </button>
+          <ManageMenu d={d} bundles={bundles} onManage={onManage} />
         </div>
         <p className="path" title={d.dir}>
           {d.dir}
@@ -105,6 +105,66 @@ function DetailBody({ d }: { d: SkillDetail }) {
         {d.markdownTruncated && <p className="sub">Showing the first 512 KB.</p>}
       </section>
     </aside>
+  );
+}
+
+type MenuItem = { label: string; hint: string; request: ActionRequest; danger?: boolean };
+
+/** Every action that applies to this skill's mounts, body and bundles. The planner decides whether each is allowed. */
+function ManageMenu({ d, bundles, onManage }: { d: SkillDetail; bundles: BundleRow[]; onManage: Manage }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const items: MenuItem[] = [];
+  for (const m of d.mounts) {
+    const where = `${m.summary.harness.label}, ${m.summary.scope.label}`;
+    items.push({ label: `Disable in ${where}`, hint: m.summary.entry, request: { kind: "disable", mount: m.summary.id } });
+    items.push({ label: `Remove from ${where}`, hint: m.summary.entry, request: { kind: "removeMount", mount: m.summary.id } });
+  }
+  for (const b of bundles.filter((b) => d.row.bundles.includes(b.id))) {
+    const hint = `${b.memberCount} skills, ${b.harness.label}`;
+    items.push(
+      b.enabled
+        ? { label: `Disable plugin ${b.name}`, hint, request: { kind: "bundleDisable", bundle: b.id } }
+        : { label: `Enable plugin ${b.name}`, hint, request: { kind: "bundleEnable", bundle: b.id } },
+    );
+  }
+  items.push({ label: "Delete everywhere", hint: "Every link, then the folder to the Recycle Bin", request: { kind: "deleteBody", skill: d.row.id }, danger: true });
+
+  return (
+    <div className="menu-anchor" ref={ref}>
+      <button type="button" className="manage" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        Manage…
+      </button>
+      {open && (
+        <div className="menu" role="menu">
+          {items.map((it) => (
+            <button
+              key={it.label + it.hint}
+              type="button"
+              role="menuitem"
+              className={it.danger ? "danger" : undefined}
+              onClick={() => {
+                setOpen(false);
+                onManage(it.request);
+              }}
+            >
+              <span>{it.label}</span>
+              <span className="sub">{it.hint}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

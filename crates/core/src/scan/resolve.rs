@@ -90,14 +90,17 @@ fn canonical_parent(target: &Path) -> PathBuf {
     }
 }
 
-/// Re-check at apply time: is `link` still a link, and does it still point at `target`?
-pub(crate) fn still_link_to(link: &LinkPath, target: &Path) -> bool {
-    let is_link = fs::symlink_metadata(link.as_path()).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+/// Where the link at `path` points, spelled as a scan spells the next hop. None when `path` is not a link.
+fn link_target(path: &Path) -> Option<PathBuf> {
+    let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !is_link {
-        return false;
+        return None;
     }
-    match fs::read_link(link.as_path()) {
-        Ok(t) => norm_key(&absolute_target(link.as_path(), t)) == norm_key(target),
-        Err(_) => false,
-    }
+    let target = fs::read_link(path).ok()?;
+    Some(canonical_parent(&absolute_target(path, target)))
+}
+
+/// Re-check at apply time: is `link` still a link, and does it still point at `target`?
+pub(crate) fn still_link_to(link: &Path, target: &Path) -> bool {
+    link_target(link).is_some_and(|t| norm_key(&t) == norm_key(target))
 }

@@ -10,6 +10,9 @@ export const commands = {
 	getSkill: (id: string, options?: InvokeOptions) => typedError<SkillDetail, CoreError>(__TAURI_INVOKE("get_skill", { id }, options)),
 	reveal: (mountId: string, hop: number, options?: InvokeOptions) => typedError<null, CoreError>(__TAURI_INVOKE("reveal", { mountId, hop }, options)),
 	refresh: (options?: InvokeOptions) => __TAURI_INVOKE<RefreshReport | null>("refresh", undefined, options),
+	planAction: (action: ActionRequest, options?: InvokeOptions) => typedError<PlanView, CoreError>(__TAURI_INVOKE("plan_action", { action }, options)),
+	/**  Apply ends with a rescan, so the UI hears about the new revision like after any refresh. */
+	applyPlan: (planId: string, options?: InvokeOptions) => typedError<ApplyReport, CoreError>(__TAURI_INVOKE("apply_plan", { planId }, options)),
 };
 
 /** Events */
@@ -18,6 +21,35 @@ export const events = {
 };
 
 /* Types */
+/**  A change the UI asks for. It names things only by ids the core issued, never by path. */
+export type ActionRequest = { kind: "removeMount"; mount: string } | { kind: "deleteBody"; skill: string } | { kind: "disable"; mount: string } | { kind: "restore"; shelf: string } | { kind: "bundleEnable"; bundle: string } | { kind: "bundleDisable"; bundle: string };
+
+export type ApplyOutcomeKind = "applied" | 
+/**  A step failed. The steps before it ran, the ones after did not. */
+"failed" | 
+/**  The disk changed since planning. Nothing ran, and the UI plans again. */
+"stale" | "refused";
+
+export type ApplyReport = {
+	outcome: ApplyOutcomeKind,
+	/**  One per planned step, in order, so the UI shows which ran. */
+	steps: StepRunView[],
+	/**  Why a stale plan was refused. */
+	reasons: string[],
+	/**  Output of any command the plan ran. */
+	output: string[],
+	/**  The inventory revision after the refresh that follows an apply. */
+	revision: number,
+};
+
+export type BlockerKind = "recreatedBy" | "partOfBundle" | "sharedBody" | "insideJstackRepo" | "harnessBuiltin" | "unsupported";
+
+export type BlockerView = {
+	kind: BlockerKind,
+	reason: string,
+	remedy: string,
+};
+
 export type BrokenLinkRow = {
 	id: string,
 	harness: Tag,
@@ -43,6 +75,11 @@ export type ConflictMember = {
 };
 
 export type CoreError = { kind: "unknownId"; id: string } | { kind: "io"; message: string };
+
+export type EffectView = {
+	harness: Tag | null,
+	text: string,
+};
 
 export type FacetValue = {
 	id: string,
@@ -94,6 +131,8 @@ export type Inventory = {
 	facets: Facets,
 	/**  Earliest transcript time per harness. A harness missing here has no usage data, which is not the same as zero uses. */
 	trackingSince: TrackingView[],
+	/**  Mounts skilltab took away and can put back. They are the disabled rows. */
+	shelf: ShelfRow[],
 };
 
 /**  Emitted after every refresh. The UI re-fetches the inventory when `revision` changes. */
@@ -133,6 +172,18 @@ export type OriginView = {
 	detail: string | null,
 };
 
+export type PlanView = {
+	id: string,
+	title: string,
+	/**  The confirm button's label. */
+	confirm: string,
+	steps: StepView[],
+	effects: EffectView[],
+	blockers: BlockerView[],
+	/**  No blockers and at least one step. The confirm button is enabled only then. */
+	ready: boolean,
+};
+
 export type Problems = {
 	brokenLinks: BrokenLinkRow[],
 	nameConflicts: NameConflict[],
@@ -154,6 +205,19 @@ export type ScopeView = {
 	label: string,
 	path: string | null,
 	bundle: string | null,
+};
+
+export type ShelfReasonView = "disabled" | "removed";
+
+export type ShelfRow = {
+	id: string,
+	name: string,
+	harness: Tag,
+	entry: string,
+	reason: ShelfReasonView,
+	/**  What restoring does, as a sentence. */
+	note: string,
+	at: string,
 };
 
 export type SkillDetail = {
@@ -181,6 +245,24 @@ export type SkillRow = {
 	mounts: MountSummary[],
 	usage: UsageSummary,
 	flags: Flag[],
+};
+
+export type StepKind = "removeLink" | "recycle" | "stash" | "relink" | "unstash" | "run";
+
+export type StepResultView = "done" | "skipped" | "failed" | "notRun";
+
+export type StepRunView = {
+	text: string,
+	detail: string,
+	result: StepResultView,
+	message: string | null,
+};
+
+export type StepView = {
+	kind: StepKind,
+	text: string,
+	/**  The path or command the step works on. */
+	detail: string,
 };
 
 /**  An id plus the text to show for it. */

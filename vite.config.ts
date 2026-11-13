@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
+// This repo's own folder, so ignoring its .claude does not also ignore a worktree that lives under .claude/worktrees.
+const repoRoot = decodeURIComponent(new URL(".", import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1").replace(/\/$/, "");
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
@@ -25,7 +27,7 @@ export default defineConfig(() => ({
         }
       : undefined,
     watch: {
-      ignored: ["**/src-tauri/**", "**/crates/**", "**/target/**", "**/.claude/**", "**/.audit/**", "**/docs/**"],
+      ignored: ["**/src-tauri/**", "**/crates/**", "**/target/**", `${repoRoot}/.claude/**`, "**/.audit/**", "**/docs/**"],
     },
   },
 }));

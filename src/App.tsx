@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActionDialog } from "./ActionDialog";
+import type { ActionRequest } from "./bindings";
 import { Detail } from "./Detail";
-import { BrokenPanel, BundlesPanel, ConflictsPanel } from "./Panels";
+import { BrokenPanel, BundlesPanel, ConflictsPanel, ShelfPanel } from "./Panels";
 import { SkillTable } from "./SkillTable";
 import { Toolbar } from "./Toolbar";
 import { filterAndSort, NO_FILTERS, type Filters, type Sort, type SortKey } from "./filters";
 import { hueMap, HueProvider } from "./ui";
 import { useInventory } from "./useInventory";
 
-type Tab = "skills" | "bundles" | "conflicts" | "broken";
+type Tab = "skills" | "shelf" | "bundles" | "conflicts" | "broken";
 
 export default function App() {
   const { inventory: inv, error, firstLoadMs, refresh, refreshing } = useInventory();
@@ -15,9 +17,21 @@ export default function App() {
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [sort, setSort] = useState<Sort>({ key: "name", dir: "asc" });
   const [selected, setSelected] = useState<string | null>(null);
+  const [action, setAction] = useState<ActionRequest | null>(null);
+  const closeAction = useCallback(() => setAction(null), []);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   const rows = useMemo(() => (inv ? filterAndSort(inv.rows, filters, sort) : []), [inv, filters, sort]);
+  // Shelved rows have no usage, owner or origin, so they only show under the name and harness filters.
+  const shelved = useMemo(() => {
+    if (!inv) return [];
+    const onlyNameAndHarness = JSON.stringify({ ...filters, text: "", harnesses: [] }) === JSON.stringify(NO_FILTERS);
+    if (!onlyNameAndHarness) return [];
+    const text = filters.text.toLowerCase();
+    return inv.shelf.filter(
+      (s) => s.name.toLowerCase().includes(text) && (filters.harnesses.length === 0 || filters.harnesses.includes(s.harness.id)),
+    );
+  }, [inv, filters]);
   const hue = useMemo(() => (inv ? hueMap(inv.facets) : () => 210), [inv]);
 
   const onSort = (key: SortKey) =>
@@ -45,6 +59,7 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (action) return;
       const typing = e.target instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName);
       if (e.key === "/" && !typing) {
         e.preventDefault();
@@ -64,7 +79,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tab, step, filters.text]);
+  }, [tab, step, filters.text, action]);
 
   if (!inv) {
     return <main className="boot">{error ? <p className="error">Could not read the inventory: {error}</p> : <p className="sub">Scanning skills…</p>}</main>;
@@ -73,6 +88,7 @@ export default function App() {
   const stillThere = selected && inv.rows.some((r) => r.id === selected) ? selected : null;
   const tabs: { id: Tab; label: string; n: number }[] = [
     { id: "skills", label: "Skills", n: inv.rows.length },
+    { id: "shelf", label: "Shelf", n: inv.shelf.length },
     { id: "bundles", label: "Bundles", n: inv.bundles.length },
     { id: "conflicts", label: "Name conflicts", n: inv.problems.nameConflicts.length },
     { id: "broken", label: "Broken links", n: inv.problems.brokenLinks.length + inv.problems.other.length },
@@ -105,9 +121,17 @@ export default function App() {
           <>
             <Toolbar inv={inv} filters={filters} onChange={(patch) => setFilters((f) => ({ ...f, ...patch }))} shown={rows.length} searchRef={searchRef} />
             <div className="split">
-              <SkillTable rows={rows} selected={stillThere} onSelect={setSelected} sort={sort} onSort={onSort} />
+              <SkillTable
+                rows={rows}
+                shelved={shelved}
+                onRestore={(shelf) => setAction({ kind: "restore", shelf })}
+                selected={stillThere}
+                onSelect={setSelected}
+                sort={sort}
+                onSort={onSort}
+              />
               {stillThere ? (
-                <Detail id={stillThere} revision={inv.revision} />
+                <Detail id={stillThere} revision={inv.revision} bundles={inv.bundles} onManage={setAction} />
               ) : (
                 <aside className="detail detail-empty">
                   <p>Select a skill to see where it is mounted, who owns it, and what it says.</p>
@@ -117,7 +141,9 @@ export default function App() {
             </div>
           </>
         )}
-        {tab === "bundles" && <BundlesPanel bundles={inv.bundles} onPick={showBundle} />}
+        {tab === "shelf" && <ShelfPanel shelf={inv.shelf} onManage={setAction} />}
+        {tab === "bundles" && <BundlesPanel bundles={inv.bundles} onPick={showBundle} onManage={setAction} />}
+        {action && <ActionDialog request={action} onClose={closeAction} />}
         {tab === "conflicts" && <ConflictsPanel problems={inv.problems} onPick={showSkill} />}
         {tab === "broken" && <BrokenPanel problems={inv.problems} />}
 

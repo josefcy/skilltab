@@ -532,7 +532,7 @@ mod relation_tests {
     use super::*;
     use crate::Env;
     fn snapshot(env: &Env) -> crate::Snapshot {
-        crate::scan_disk(env, 1)
+        crate::scan_disk(env, &[], 1)
     }
     use std::fs;
     use std::process::Command;

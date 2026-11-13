@@ -300,7 +300,7 @@ mod tests {
     }
 
     fn snapshot(home: &Path) -> Snapshot {
-        crate::scan_disk(&Env { home: home.to_path_buf(), projects: Vec::new(), jstack_root: None }, 1)
+        crate::scan_disk(&Env { home: home.to_path_buf(), projects: Vec::new(), jstack_root: None }, &[], 1)
     }
 
     fn name(n: &str) -> InvocationKey {

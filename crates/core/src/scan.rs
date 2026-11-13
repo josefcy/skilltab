@@ -452,8 +452,8 @@ mod tests {
         assert_eq!(norm_key(target), norm_key(&t.p("gone/y")));
         assert_eq!(*harness, HarnessId::CLAUDE_CODE);
         assert_eq!(*id, mount_id(HarnessId::CLAUDE_CODE, &t.p("claude/skills/y")));
-        assert!(still_link_to(link, &t.p("gone/y")));
-        assert!(!still_link_to(link, &t.p("elsewhere")));
+        assert!(still_link_to(link.as_path(), &t.p("gone/y")));
+        assert!(!still_link_to(link.as_path(), &t.p("elsewhere")));
     }
 
     #[test]

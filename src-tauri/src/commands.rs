@@ -2,7 +2,7 @@
 //! `collect_commands!` drives both the IPC handler and `src/bindings.ts`, so the two cannot disagree.
 
 use serde::{Deserialize, Serialize};
-use skilltab_core::view::{CoreError, Inventory, RefreshReport, SkillDetail};
+use skilltab_core::view::{ActionRequest, ApplyReport, CoreError, Inventory, PlanView, RefreshReport, SkillDetail};
 use skilltab_core::Skilltab;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager, State};
@@ -42,6 +42,21 @@ fn refresh(handle: AppHandle) -> Option<RefreshReport> {
     refresh_and_notify(&handle)
 }
 
+#[tauri::command(async)]
+#[specta::specta]
+fn plan_action(app: State<'_, Skilltab>, action: ActionRequest) -> Result<PlanView, CoreError> {
+    app.plan(&action)
+}
+
+/// Apply ends with a rescan, so the UI hears about the new revision like after any refresh.
+#[tauri::command(async)]
+#[specta::specta]
+fn apply_plan(handle: AppHandle, plan_id: String) -> Result<ApplyReport, CoreError> {
+    let report = handle.state::<Skilltab>().apply(&plan_id)?;
+    let _ = InventoryChanged { revision: report.revision }.emit(&handle);
+    Ok(report)
+}
+
 /// None when another refresh is already running.
 pub fn refresh_and_notify(handle: &AppHandle) -> Option<RefreshReport> {
     let guard = handle.state::<RefreshGuard>();
@@ -58,6 +73,6 @@ pub fn builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .error_handling(ErrorHandlingMode::Result)
         .disable_serde_phases()
-        .commands(collect_commands![get_inventory, get_skill, reveal, refresh])
+        .commands(collect_commands![get_inventory, get_skill, reveal, refresh, plan_action, apply_plan])
         .events(collect_events![InventoryChanged])
 }
