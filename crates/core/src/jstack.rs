@@ -165,6 +165,167 @@ fn parse_sources(lines: &[String]) -> Vec<DeclaredSource> {
         .collect()
 }
 
+// ---------------------------------------------------------------- relations and drift
+
+/// How one installed body relates to the repo. Derived on every call, never stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JstackRelation {
+    /// The body is the repo folder itself, reached through a junction. It cannot differ from the
+    /// working tree, so drift is about the working tree against HEAD and HEAD against upstream.
+    Owned { skill: String, drift: Drift },
+    /// A separate folder with the same name as a repo skill. Drift is a content-hash comparison.
+    CopyOf { skill: String, drift: Drift },
+    /// Listed in skill-sources.txt and installed by the `skills` CLI.
+    Declared { source: String, skill: String },
+}
+
+/// Only one drift is reported, the most urgent: edits first because they are the user's unsaved
+/// work, then a diverged branch because `git pull --ff-only` cannot fix it, then plain behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Drift {
+    InSync,
+    /// Owned: files under the skill's folder differ from HEAD.
+    UncommittedEdits { files: Vec<PathBuf> },
+    /// Owned: upstream has commits that HEAD lacks. Counted across the whole repo, as of `fetched_at`.
+    Behind { commits: u32 },
+    /// Owned: local commits and upstream commits both exist, so a fast-forward pull fails.
+    Diverged { ahead: u32, behind: u32 },
+    /// CopyOf: the folder's bytes differ from the repo folder's.
+    ContentDiffers { installed: ContentHash, repo: ContentHash },
+}
+
+/// A repo skill that a present harness does not have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotInstalled {
+    pub harness: HarnessId,
+    pub skill: String,
+    pub why: Absence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Absence {
+    /// Nothing in the harness answers to the name. Running sync-skills.ps1 links it.
+    Absent,
+    /// Another body already uses the name there. sync-skills.ps1 keeps that one and skips the repo's.
+    NameTaken { by: SkillId },
+}
+
+/// A skill that skill-sources.txt lists and no installed `skills` CLI body provides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredMissing {
+    pub source: String,
+    pub skill: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct JstackReport {
+    /// Bodies that relate to the repo, ordered by skill name.
+    pub relations: Vec<(SkillId, JstackRelation)>,
+    /// Ordered by harness, then skill. Excluded names (exclude.txt) are never listed.
+    pub not_installed: Vec<NotInstalled>,
+    pub declared_missing: Vec<DeclaredMissing>,
+}
+
+/// Pure. `Owned` wins over `CopyOf`, which wins over `Declared`.
+pub fn relate(body: &SkillBody, repo: &RepoState) -> Option<JstackRelation> {
+    if let Origin::JstackRepo { skill } = &body.origin {
+        return Some(JstackRelation::Owned { skill: skill.clone(), drift: owned_drift(repo, skill) });
+    }
+    if let Some(own) = repo.skills.iter().find(|s| answers_to(body, &s.name)) {
+        let drift = if body.content_hash == own.content_hash {
+            Drift::InSync
+        } else {
+            Drift::ContentDiffers { installed: body.content_hash.clone(), repo: own.content_hash.clone() }
+        };
+        return Some(JstackRelation::CopyOf { skill: own.name.clone(), drift });
+    }
+    if matches!(body.origin, Origin::SkillsCli { .. }) {
+        let hit = repo.declared.iter().find_map(|d| d.skills.iter().find(|s| answers_to(body, s)).map(|s| (d, s)));
+        if let Some((d, skill)) = hit {
+            return Some(JstackRelation::Declared { source: d.source.clone(), skill: skill.clone() });
+        }
+    }
+    None
+}
+
+/// Pure. Relations for every body, the repo skills each present harness lacks, and the declared skills that are missing.
+pub fn report(snapshot: &Snapshot, repo: &RepoState) -> JstackReport {
+    let mut relations: Vec<(SkillId, JstackRelation)> =
+        snapshot.bodies.values().filter_map(|b| relate(b, repo).map(|r| (b.id.clone(), r))).collect();
+    relations.sort_by(|a, b| relation_name(&a.1).cmp(relation_name(&b.1)).then_with(|| a.0.cmp(&b.0)));
+
+    // jstack links into the user-level skill folders, so a project-scope mount does not count.
+    let mut installed: std::collections::HashSet<(HarnessId, &str)> = std::collections::HashSet::new();
+    for (id, rel) in &relations {
+        let (JstackRelation::Owned { skill, .. } | JstackRelation::CopyOf { skill, .. }) = rel else { continue };
+        let mounts = snapshot.bodies.get(id).into_iter().flat_map(|b| &b.mounts).filter_map(|m| snapshot.mounts.get(m));
+        for m in mounts.filter(|m| m.scope == Scope::User) {
+            installed.insert((m.harness, skill.as_str()));
+        }
+    }
+
+    let mut not_installed = Vec::new();
+    for harness in snapshot.harnesses.iter().filter(|h| h.present) {
+        for skill in repo.skills.iter().filter(|s| !repo.excluded.contains(&s.name)) {
+            if installed.contains(&(harness.id, skill.name.as_str())) {
+                continue;
+            }
+            let holder = snapshot
+                .mounts
+                .values()
+                .filter(|m| m.harness == harness.id && !matches!(m.scope, Scope::Project { .. }))
+                .filter_map(|m| snapshot.bodies.get(&m.body))
+                .filter(|b| b.manifest.name == skill.name)
+                .map(|b| &b.id)
+                .min();
+            let why = holder.map_or(Absence::Absent, |by| Absence::NameTaken { by: by.clone() });
+            not_installed.push(NotInstalled { harness: harness.id, skill: skill.name.clone(), why });
+        }
+    }
+    not_installed.sort_by(|a, b| a.harness.cmp(&b.harness).then_with(|| a.skill.cmp(&b.skill)));
+
+    let provided: std::collections::HashSet<(&str, &str)> = relations
+        .iter()
+        .filter_map(|(_, r)| match r {
+            JstackRelation::Declared { source, skill } => Some((source.as_str(), skill.as_str())),
+            _ => None,
+        })
+        .collect();
+    let declared_missing = repo
+        .declared
+        .iter()
+        .flat_map(|d| d.skills.iter().map(move |s| (d, s)))
+        .filter(|(d, s)| !provided.contains(&(d.source.as_str(), s.as_str())))
+        .map(|(d, s)| DeclaredMissing { source: d.source.clone(), skill: s.clone() })
+        .collect();
+
+    JstackReport { relations, not_installed, declared_missing }
+}
+
+fn owned_drift(repo: &RepoState, skill: &str) -> Drift {
+    let folder = Path::new("skills").join(skill);
+    let files: Vec<PathBuf> = repo.dirty.iter().filter(|p| p.starts_with(&folder)).cloned().collect();
+    if !files.is_empty() {
+        return Drift::UncommittedEdits { files };
+    }
+    match &repo.upstream {
+        Some(Upstream { ahead, behind, .. }) if *behind > 0 && *ahead > 0 => Drift::Diverged { ahead: *ahead, behind: *behind },
+        Some(Upstream { behind, .. }) if *behind > 0 => Drift::Behind { commits: *behind },
+        _ => Drift::InSync,
+    }
+}
+
+/// The folder name is what the skills lock and the repo use. The frontmatter name is what harnesses load.
+fn answers_to(body: &SkillBody, name: &str) -> bool {
+    body.manifest.name == name || body.dir.as_path().file_name().is_some_and(|f| f == name)
+}
+
+fn relation_name(r: &JstackRelation) -> &str {
+    match r {
+        JstackRelation::Owned { skill, .. } | JstackRelation::CopyOf { skill, .. } | JstackRelation::Declared { skill, .. } => skill,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +451,228 @@ mod tests {
         assert!(matches!(RepoState::load(&plain), Err(JstackError::NotAGitRepo(_))));
         // A fresh repo has no HEAD to report.
         assert!(matches!(RepoState::load(&repo.root), Err(JstackError::Git { .. })));
+    }
+}
+
+#[cfg(test)]
+mod relation_tests {
+    use super::tests::TempRepo;
+    use super::*;
+    use crate::{snapshot, Env};
+    use std::fs;
+    use std::process::Command;
+
+    /// A fake home with a real jstack clone and the folders each case needs. Harness folders are
+    /// the real ones (`.claude/skills`, `.agents/skills`), so the snapshot comes from the real scanner.
+    struct Home {
+        repo: TempRepo,
+        home: PathBuf,
+    }
+
+    impl Home {
+        fn new() -> Home {
+            let repo = TempRepo::new();
+            for (name, body) in [("alpha", "one"), ("beta", "two"), ("gamma", "three"), ("delta", "four")] {
+                repo.skill(name, body);
+            }
+            repo.write("skill-sources.txt", "owner/pack ext-installed ext-missing\n");
+            repo.commit_all("init");
+            let home = repo.root.parent().unwrap().to_path_buf();
+            Home { repo, home }
+        }
+
+        fn folder(&self, rel: &str, name: &str, body: &str) -> PathBuf {
+            let dir = self.home.join(rel);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\n{body}\n")).unwrap();
+            dir
+        }
+
+        fn junction(&self, link: &str, target: &Path) {
+            let link = self.home.join(link.replace('/', "\\"));
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            let out = Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(&link).arg(target.to_string_lossy().replace('/', "\\")).output().unwrap();
+            assert!(out.status.success(), "mklink: {}", String::from_utf8_lossy(&out.stdout));
+        }
+
+        fn lock(&self, skill: &str, source: &str) {
+            let dir = self.home.join(".agents");
+            fs::create_dir_all(&dir).unwrap();
+            let json = format!(r#"{{"version":3,"skills":{{"{skill}":{{"source":"{source}"}}}}}}"#);
+            fs::write(dir.join(".skill-lock.json"), json).unwrap();
+        }
+
+        /// alpha: junction to the repo (Owned, Claude only). beta: edited copy in Codex. gamma: identical
+        /// copy in Claude. delta: nowhere. ext-installed: a `skills` CLI install.
+        fn standard() -> Home {
+            let h = Home::new();
+            h.junction(".claude/skills/alpha", &h.repo.root.join("skills").join("alpha"));
+            h.folder(".agents/skills/beta", "beta", "changed");
+            let copy = h.folder(".claude/skills/gamma", "x", "x");
+            fs::copy(h.repo.root.join("skills/gamma/SKILL.md"), copy.join("SKILL.md")).unwrap();
+            h.folder(".agents/skills/ext-installed", "ext-installed", "e");
+            h.lock("ext-installed", "owner/pack");
+            h
+        }
+
+        fn env(&self, root: &Path) -> Env {
+            Env { home: self.home.clone(), projects: vec![], jstack_root: Some(root.to_path_buf()) }
+        }
+
+        fn report(&self) -> (Snapshot, RepoState, JstackReport) {
+            let snap = snapshot(&self.env(&self.repo.root));
+            let repo = RepoState::load(&self.repo.root).unwrap();
+            let rep = report(&snap, &repo);
+            (snap, repo, rep)
+        }
+    }
+
+    fn relation_of<'a>(rep: &'a JstackReport, skill: &str) -> &'a JstackRelation {
+        let found: Vec<_> = rep.relations.iter().map(|(_, r)| r).filter(|r| relation_name(r) == skill).collect();
+        assert_eq!(found.len(), 1, "{skill}: {:?}", rep.relations);
+        found[0]
+    }
+
+    #[test]
+    fn owned_body_in_a_clean_repo_is_in_sync() {
+        let (snap, _, rep) = Home::standard().report();
+        assert!(snap.issues.is_empty(), "{:?}", snap.issues);
+        assert_eq!(*relation_of(&rep, "alpha"), JstackRelation::Owned { skill: "alpha".into(), drift: Drift::InSync });
+    }
+
+    #[test]
+    fn owned_body_with_uncommitted_edits_names_its_files_and_ignores_other_skills() {
+        let h = Home::standard();
+        h.repo.skill("alpha", "edited");
+        h.repo.write("skills/alpha/notes.md", "new file");
+        h.repo.skill("delta", "also edited");
+        let (_, _, rep) = h.report();
+
+        let JstackRelation::Owned { drift: Drift::UncommittedEdits { files }, .. } = relation_of(&rep, "alpha") else {
+            panic!("expected edits: {:?}", relation_of(&rep, "alpha"));
+        };
+        let mut files: Vec<String> = files.iter().map(|f| f.to_string_lossy().replace('\\', "/")).collect();
+        files.sort();
+        assert_eq!(files, ["skills/alpha/SKILL.md", "skills/alpha/notes.md"]);
+    }
+
+    #[test]
+    fn owned_body_is_behind_when_upstream_has_commits_and_diverged_when_both_sides_do() {
+        let h = Home::standard();
+        let clone = h.home.join("clone");
+        let out = Command::new("git").arg("clone").arg("-q").arg(&h.repo.root).arg(&clone).output().unwrap();
+        assert!(out.status.success());
+        // Re-aim the junction at the clone's alpha so the body lives in the clone, then move origin on.
+        fs::remove_dir(h.home.join(".claude/skills/alpha")).unwrap();
+        h.junction(".claude/skills/alpha", &clone.join("skills").join("alpha"));
+        h.repo.skill("beta", "origin moved");
+        h.repo.commit_all("origin moves");
+        fetch(&clone).unwrap();
+
+        let snap = snapshot(&h.env(&clone));
+        let alpha = |repo: &RepoState| {
+            let rep = report(&snap, repo);
+            relation_of(&rep, "alpha").clone()
+        };
+        let behind = RepoState::load(&clone).unwrap();
+        assert_eq!(alpha(&behind), JstackRelation::Owned { skill: "alpha".into(), drift: Drift::Behind { commits: 1 } });
+
+        fs::write(clone.join("local.txt"), "x").unwrap();
+        let commit = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&clone).args(["-c", "user.name=t", "-c", "user.email=t@example.com"]).args(args).output().unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        };
+        commit(&["add", "-A"]);
+        commit(&["commit", "-q", "-m", "local"]);
+        let diverged = RepoState::load(&clone).unwrap();
+        assert_eq!(alpha(&diverged), JstackRelation::Owned { skill: "alpha".into(), drift: Drift::Diverged { ahead: 1, behind: 1 } });
+    }
+
+    #[test]
+    fn copy_with_identical_bytes_is_in_sync_and_edited_copy_differs() {
+        let (_, repo, rep) = Home::standard().report();
+        assert_eq!(*relation_of(&rep, "gamma"), JstackRelation::CopyOf { skill: "gamma".into(), drift: Drift::InSync });
+
+        let own = repo.skills.iter().find(|s| s.name == "beta").unwrap();
+        let JstackRelation::CopyOf { drift: Drift::ContentDiffers { installed, repo: repo_hash }, .. } = relation_of(&rep, "beta") else {
+            panic!("expected a differing copy: {:?}", relation_of(&rep, "beta"));
+        };
+        assert_eq!(repo_hash, &own.content_hash);
+        assert_ne!(installed, repo_hash);
+    }
+
+    #[test]
+    fn a_copy_starts_differing_when_the_repo_skill_changes() {
+        let h = Home::standard();
+        h.repo.skill("gamma", "repo moved on");
+        let (_, _, rep) = h.report();
+        assert!(matches!(relation_of(&rep, "gamma"), JstackRelation::CopyOf { drift: Drift::ContentDiffers { .. }, .. }));
+    }
+
+    #[test]
+    fn declared_skill_is_installed_only_when_the_skills_cli_installed_it_and_missing_otherwise() {
+        let (_, _, rep) = Home::standard().report();
+        assert_eq!(
+            *relation_of(&rep, "ext-installed"),
+            JstackRelation::Declared { source: "owner/pack".into(), skill: "ext-installed".into() }
+        );
+        assert_eq!(rep.declared_missing, [DeclaredMissing { source: "owner/pack".into(), skill: "ext-missing".into() }]);
+    }
+
+    #[test]
+    fn declared_name_installed_by_something_other_than_the_skills_cli_stays_missing() {
+        let h = Home::new();
+        h.folder(".agents/skills/ext-installed", "ext-installed", "by hand");
+        let (_, _, rep) = h.report();
+        assert!(rep.relations.is_empty(), "{:?}", rep.relations);
+        assert_eq!(rep.declared_missing.len(), 2);
+    }
+
+    #[test]
+    fn repo_skills_missing_from_each_harness_are_listed_and_excluded_ones_are_not() {
+        let h = Home::standard();
+        h.repo.write("exclude.txt", "delta\n");
+        h.repo.commit_all("exclude delta");
+        let (snap, _, rep) = h.report();
+
+        let missing = |harness: HarnessId| -> Vec<&str> {
+            rep.not_installed.iter().filter(|n| n.harness == harness).map(|n| n.skill.as_str()).collect()
+        };
+        assert!(snap.harnesses.iter().all(|i| i.present));
+        assert_eq!(missing(HarnessId::CLAUDE_CODE), ["beta"]);
+        assert_eq!(missing(HarnessId::CODEX), ["alpha", "gamma"]);
+        assert!(rep.not_installed.iter().all(|n| n.why == Absence::Absent));
+    }
+
+    #[test]
+    fn a_project_copy_does_not_count_as_installed_for_jstack() {
+        let h = Home::standard();
+        let project = h.home.join("proj");
+        h.folder("proj/.claude/skills/delta", "delta", "four");
+        let env = Env { home: h.home.clone(), projects: vec![project], jstack_root: Some(h.repo.root.clone()) };
+        let snap = snapshot(&env);
+        let rep = report(&snap, &RepoState::load(&h.repo.root).unwrap());
+        let delta = rep.not_installed.iter().find(|n| n.skill == "delta" && n.harness == HarnessId::CLAUDE_CODE).unwrap();
+        assert_eq!(delta.why, Absence::Absent);
+    }
+
+    #[test]
+    fn a_plugin_skill_with_the_same_name_blocks_the_link_and_is_named() {
+        let h = Home::standard();
+        let root = h.home.join("cache").join("p");
+        h.folder("cache/p/skills/delta", "delta", "plugin delta");
+        let claude = h.home.join(".claude");
+        fs::create_dir_all(claude.join("plugins")).unwrap();
+        let installed = format!(
+            r#"{{"version":2,"plugins":{{"p@m":[{{"scope":"user","installPath":{}}}]}}}}"#,
+            serde_json::to_string(&root).unwrap()
+        );
+        fs::write(claude.join("plugins/installed_plugins.json"), installed).unwrap();
+        fs::write(claude.join("settings.json"), r#"{"enabledPlugins":{"p@m":true}}"#).unwrap();
+
+        let (snap, _, rep) = h.report();
+        let delta = rep.not_installed.iter().find(|n| n.skill == "delta" && n.harness == HarnessId::CLAUDE_CODE).unwrap();
+        let Absence::NameTaken { by } = &delta.why else { panic!("{delta:?}") };
+        assert_eq!(snap.bodies[by].manifest.name, "delta");
     }
 }
