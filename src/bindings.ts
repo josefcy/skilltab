@@ -106,6 +106,7 @@ export type MountDetail = {
 	ownerNote: string,
 	/**  Entry first, real folder last. A hop's index is what `Skilltab::reveal` takes. */
 	chain: HopView[],
+	/**  The names a harness uses for this mount in its logs and menus. */
 	keys: string[],
 };
 

@@ -241,6 +241,7 @@ pub struct MountDetail {
     pub owner_note: String,
     /// Entry first, real folder last. A hop's index is what `Skilltab::reveal` takes.
     pub chain: Vec<HopView>,
+    /// The names a harness uses for this mount in its logs and menus.
     pub keys: Vec<String>,
 }
 
@@ -329,7 +330,7 @@ pub(crate) fn detail(snap: &Snapshot, id: &str, tallies: &Tallies, tracking: &Tr
                     kind: if i < m.hops.len() { HopKind::Link } else { HopKind::Folder },
                 })
                 .collect(),
-            keys: m.keys.iter().map(key_str).collect(),
+            keys: m.keys.iter().filter_map(name_key).collect(),
         })
         .collect();
 
@@ -714,7 +715,8 @@ impl<'a> Cx<'a> {
         }
         if row.flags.contains(&Flag::NameConflict) {
             let others = self.by_name.get(body.manifest.name.as_str()).map_or(0, |v| v.len().saturating_sub(1));
-            notes.push(format!("{others} other installed skill{} share the name \"{}\".", if others == 1 { "" } else { "s" }, body.manifest.name));
+            let (noun, verb) = if others == 1 { ("skill", "shares") } else { ("skills", "share") };
+            notes.push(format!("{others} other installed {noun} {verb} the name \"{}\".", body.manifest.name));
         }
         for i in &body.manifest.issues {
             notes.push(match i {
@@ -747,10 +749,10 @@ fn owner_tag(o: &Ownership) -> Tag {
     Tag { id: id.into(), label: label.into() }
 }
 
-fn key_str(k: &InvocationKey) -> String {
+fn name_key(k: &InvocationKey) -> Option<String> {
     match k {
-        InvocationKey::Name(n) => n.clone(),
-        InvocationKey::SkillFile(p) => path_str(p),
+        InvocationKey::Name(n) => Some(n.clone()),
+        InvocationKey::SkillFile(_) => None,
     }
 }
 
