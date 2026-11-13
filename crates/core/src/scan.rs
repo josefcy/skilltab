@@ -5,7 +5,7 @@ mod hash;
 mod manifest;
 mod resolve;
 
-use crate::harness::{Discovery, EntryFact, Harness, Naming, ScopeFact};
+use crate::harness::{Discovery, EntryFact, Harness, InstallFact, Naming, ScopeFact};
 use crate::model::*;
 use crate::provenance::Provenance;
 use crate::Env;
@@ -96,7 +96,10 @@ impl<'a> Builder<'a> {
         for f in d.bundles {
             let bid = BundleId::mint(format!("{}:{}", id.as_str(), f.key));
             bundle_ids.insert(f.key, bid.clone());
-            let install_scope = f.install_scope;
+            let install_scope = match f.install_scope {
+                InstallFact::User => InstallScope::User,
+                InstallFact::Project(p) => InstallScope::Project { root: ProjectRoot::mint(p) },
+            };
             self.bundles.insert(
                 bid.clone(),
                 Bundle {

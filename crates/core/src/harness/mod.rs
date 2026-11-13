@@ -17,7 +17,10 @@ impl HarnessId {
     pub const CODEX: HarnessId = HarnessId("codex");
 }
 
-static REGISTRY: &[&dyn Harness] = &[];
+mod claude;
+mod codex;
+
+static REGISTRY: &[&dyn Harness] = &[&claude::ClaudeCode, &codex::Codex];
 
 pub fn registry() -> &'static [&'static dyn Harness] {
     REGISTRY
@@ -106,9 +109,15 @@ pub struct BundleFact {
     pub name: String,
     pub marketplace: String,
     pub version: Option<String>,
-    pub install_scope: InstallScope,
+    pub install_scope: InstallFact,
     pub enabled: bool,
     pub root: PathBuf,
+}
+
+/// Like model::InstallScope, but a project is a path because only the scanner mints ProjectRoots.
+pub enum InstallFact {
+    User,
+    Project(PathBuf),
 }
 
 impl Discovery {
