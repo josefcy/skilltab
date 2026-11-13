@@ -167,9 +167,9 @@ impl Discovery {
             match fsutil::read_json(&path) {
                 Ok(Some(manifest)) => {
                     match manifest.get("skills") {
-                        Some(serde_json::Value::String(s)) => dirs.push(root.join(s)),
+                        Some(serde_json::Value::String(s)) => dirs.push(join_relative(root, s)),
                         Some(serde_json::Value::Array(a)) => {
-                            dirs.extend(a.iter().filter_map(|v| v.as_str()).map(|s| root.join(s)));
+                            dirs.extend(a.iter().filter_map(|v| v.as_str()).map(|s| join_relative(root, s)));
                         }
                         _ => {}
                     }
@@ -264,4 +264,21 @@ pub struct ExternalCommand {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
+}
+
+/// Manifests write paths like "./skills/". Dropping the `.` keeps one spelling per folder.
+fn join_relative(root: &Path, rel: &str) -> PathBuf {
+    rel.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").fold(root.to_path_buf(), |p, c| p.join(c))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_relative_paths_collapse_to_one_spelling() {
+        let root = Path::new(r"C:\p");
+        assert_eq!(join_relative(root, "./skills/"), root.join("skills"));
+        assert_eq!(join_relative(root, r".\skills\a"), root.join("skills").join("a"));
+    }
 }
