@@ -35,6 +35,8 @@ pub struct RepoState {
     pub declared: Vec<DeclaredSource>,
     /// exclude.txt: names that sync-skills.ps1 never mirrors between harnesses.
     pub excluded: Vec<String>,
+    /// Whether the clone has sync-skills.ps1, which `JstackAction::Sync` runs.
+    pub has_sync_script: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +114,7 @@ impl RepoState {
             skills: read_skills(root)?,
             declared: parse_sources(&read_list(&root.join("skill-sources.txt"))?),
             excluded: read_list(&root.join("exclude.txt"))?,
+            has_sync_script: root.join("sync-skills.ps1").is_file(),
         })
     }
 }
@@ -352,7 +355,7 @@ pub struct JstackCommand {
 }
 
 impl RepoState {
-    /// Pure. Whether sync-skills.ps1 exists in the clone is the planner's check, not this function's.
+    /// Pure. Whether sync-skills.ps1 exists is `has_sync_script`, which the planner checks.
     pub fn command(&self, action: &JstackAction) -> JstackCommand {
         let root = self.root.clone();
         let text = |s: &str| s.to_owned();

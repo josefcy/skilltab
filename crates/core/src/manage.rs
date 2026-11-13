@@ -7,6 +7,7 @@ mod shelf;
 mod win;
 
 use crate::harness::{registry, BundleOp, BundleRef, ExternalCommand};
+use crate::jstack::{JstackAction, JstackCommand, RepoState};
 use crate::model::*;
 use crate::scan::{content_hash, still_link_to};
 use sha1::{Digest, Sha1};
@@ -27,6 +28,7 @@ pub(crate) enum ManageAction {
     Disable(MountId),
     Restore(ShelfId),
     Bundle(BundleId, BundleOp),
+    Jstack(JstackAction),
 }
 
 pub(crate) struct Plan {
@@ -58,6 +60,11 @@ pub(crate) enum Effect {
     /// Removing `via` also breaks a mount the user did not pick.
     AlsoBreaks { mount: MountId, via: PathBuf },
     BodyRecycled { dir: PathBuf },
+    /// The command moves the jstack clone to a new commit, and every skill linked from the clone changes with it.
+    UpdatesClone,
+    /// Links jstack's skills into the harnesses and rewrites ~/.jstack-links.txt.
+    RelinksJstack,
+    InstallsDeclared { source: String, skills: Vec<String> },
 }
 
 /// Any blocker means apply refuses.
@@ -76,7 +83,8 @@ pub(crate) enum Blocker {
 
 // ---------------------------------------------------------------- planning (pure)
 
-pub(crate) fn plan(snap: &Snapshot, shelf: &Shelf, action: ManageAction) -> Plan {
+/// `repo` is the jstack clone as of the same refresh as `snap`, or None when there is no clone.
+pub(crate) fn plan(snap: &Snapshot, shelf: &Shelf, repo: Option<&RepoState>, action: ManageAction) -> Plan {
     let mut p = Plan { revision: snap.revision, action: action.clone(), steps: Vec::new(), effects: Vec::new(), blockers: Vec::new() };
     match &action {
         ManageAction::RemoveMount(m) => take_mount(snap, shelf, m, ShelfReason::Removed, &mut p),
@@ -84,6 +92,7 @@ pub(crate) fn plan(snap: &Snapshot, shelf: &Shelf, action: ManageAction) -> Plan
         ManageAction::DeleteBody(b) => delete_body(snap, b, &mut p),
         ManageAction::Restore(id) => restore(snap, id, &mut p),
         ManageAction::Bundle(b, op) => bundle(snap, b, *op, &mut p),
+        ManageAction::Jstack(a) => jstack(repo, a, &mut p),
     }
     p
 }
@@ -232,6 +241,34 @@ fn bundle(snap: &Snapshot, id: &BundleId, op: BundleOp, p: &mut Plan) {
             });
         }
     }
+}
+
+fn jstack(repo: Option<&RepoState>, action: &JstackAction, p: &mut Plan) {
+    let unsupported = |why: &str, remedy: &str| Blocker::Unsupported { why: why.to_owned(), remedy: remedy.to_owned() };
+    let Some(repo) = repo else {
+        return p.block(unsupported("No jstack clone was found on this machine.", r"Clone your jstack repo to ~\jstack, then rescan."));
+    };
+    match action {
+        JstackAction::Sync if !repo.has_sync_script => {
+            return p.block(unsupported("sync-skills.ps1 is not in your jstack clone.", "Pull a jstack commit that has it, then rescan."));
+        }
+        JstackAction::InstallDeclared { skills, .. } if skills.is_empty() => {
+            return p.block(unsupported("No skills were named to install.", "Pick at least one skill from skill-sources.txt."));
+        }
+        _ => {}
+    }
+    let JstackCommand { command, updates_clone } = repo.command(action);
+    if updates_clone {
+        p.effects.push(Effect::UpdatesClone);
+    }
+    match action {
+        JstackAction::Sync => p.effects.push(Effect::RelinksJstack),
+        JstackAction::InstallDeclared { source, skills } => {
+            p.effects.push(Effect::InstallsDeclared { source: source.clone(), skills: skills.clone() })
+        }
+        JstackAction::Pull => {}
+    }
+    p.steps.push(Step::Run { command });
 }
 
 /// Who would put the entry back, or who owns it instead of the user.

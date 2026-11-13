@@ -6,6 +6,7 @@
 //! so the UI renders what it is sent and filters on these fields without domain rules of its own.
 
 use crate::harness::BundleOp;
+use crate::jstack::{Absence, Drift, JstackAction, JstackRelation, JstackReport, RepoState};
 use crate::manage::{ApplyOutcome, Blocker, Effect, ManageAction, Plan, Step, StepResult};
 use crate::model::*;
 use serde::{Deserialize, Serialize};
@@ -82,6 +83,8 @@ pub struct SkillRow {
     pub mounts: Vec<MountSummary>,
     pub usage: UsageSummary,
     pub flags: Vec<Flag>,
+    /// How this body relates to your jstack repo. None when there is no clone or no relation.
+    pub jstack: Option<JstackRelationView>,
 }
 
 #[derive(Serialize, Type, Clone)]
@@ -217,6 +220,8 @@ pub struct Facets {
     pub bundles: Vec<FacetValue>,
     pub owners: Vec<FacetValue>,
     pub origins: Vec<FacetValue>,
+    /// Empty when there is no jstack clone. Ids: owned, copyOf, declared, drifted.
+    pub jstack: Vec<FacetValue>,
 }
 
 #[derive(Serialize, Type)]
@@ -304,8 +309,8 @@ pub enum CoreError {
 
 // ---------------------------------------------------------------- builders
 
-pub(crate) fn inventory(snap: &Snapshot, tallies: &Tallies, tracking: &TrackingSince, scan_ms: u32) -> Inventory {
-    let cx = Cx::new(snap, tallies, tracking);
+pub(crate) fn inventory(snap: &Snapshot, tallies: &Tallies, tracking: &TrackingSince, jstack: Option<&JstackReport>, scan_ms: u32) -> Inventory {
+    let cx = Cx::new(snap, tallies, tracking, jstack);
 
     let mut rows: Vec<SkillRow> = snap.bodies.values().map(|b| cx.row(b)).collect();
     rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
@@ -334,13 +339,13 @@ pub(crate) fn inventory(snap: &Snapshot, tallies: &Tallies, tracking: &TrackingS
     }
 }
 
-pub(crate) fn detail(snap: &Snapshot, id: &str, tallies: &Tallies, tracking: &TrackingSince) -> Result<SkillDetail, CoreError> {
+pub(crate) fn detail(snap: &Snapshot, id: &str, tallies: &Tallies, tracking: &TrackingSince, jstack: Option<&JstackReport>) -> Result<SkillDetail, CoreError> {
     let body = snap
         .bodies
         .values()
         .find(|b| b.id.as_str() == id)
         .ok_or_else(|| CoreError::UnknownId { id: id.to_owned() })?;
-    let cx = Cx::new(snap, tallies, tracking);
+    let cx = Cx::new(snap, tallies, tracking, jstack);
     let row = cx.row(body);
 
     let (text, truncated) = read_skill_md(body.dir.as_path());
@@ -394,10 +399,12 @@ struct Cx<'a> {
     harness_order: HashMap<HarnessId, usize>,
     /// Bodies per manifest name, for the name-conflict flag and tab.
     by_name: HashMap<&'a str, Vec<&'a SkillBody>>,
+    relations: HashMap<&'a SkillId, &'a JstackRelation>,
+    has_jstack: bool,
 }
 
 impl<'a> Cx<'a> {
-    fn new(snap: &'a Snapshot, tallies: &'a Tallies, tracking: &'a TrackingSince) -> Self {
+    fn new(snap: &'a Snapshot, tallies: &'a Tallies, tracking: &'a TrackingSince, jstack: Option<&'a JstackReport>) -> Self {
         let mut by_name: HashMap<&str, Vec<&SkillBody>> = HashMap::new();
         for b in snap.bodies.values() {
             by_name.entry(b.manifest.name.as_str()).or_default().push(b);
@@ -409,6 +416,8 @@ impl<'a> Cx<'a> {
             harness_label: snap.harnesses.iter().map(|h| (h.id, h.label)).collect(),
             harness_order: snap.harnesses.iter().enumerate().map(|(i, h)| (h.id, i)).collect(),
             by_name,
+            has_jstack: jstack.is_some(),
+            relations: jstack.into_iter().flat_map(|j| j.relations.iter().map(|(id, r)| (id, r))).collect(),
         }
     }
 
@@ -462,6 +471,7 @@ impl<'a> Cx<'a> {
             bundles,
             usage: self.usage(&mounts),
             flags: self.flags(body, &mounts),
+            jstack: self.relations.get(&body.id).map(|r| relation_view(r)),
             mounts: summaries,
         }
     }
@@ -695,12 +705,27 @@ impl<'a> Cx<'a> {
                 .count += 1;
         }
 
+        let jstack = if !self.has_jstack {
+            Vec::new()
+        } else {
+            let count = |keep: &dyn Fn(&JstackRelationView) -> bool| rows.iter().filter(|r| r.jstack.as_ref().is_some_and(keep)).count() as u32;
+            [
+                ("owned", "owned by jstack", count(&|j| j.kind == JstackKind::Owned)),
+                ("copyOf", "copy of a jstack skill", count(&|j| j.kind == JstackKind::CopyOf)),
+                ("declared", "declared by jstack", count(&|j| j.kind == JstackKind::Declared)),
+                ("drifted", "drifted", count(&|j| j.drifted)),
+            ]
+            .map(|(id, label, count)| FacetValue { id: id.into(), label: label.into(), count, present: true })
+            .into()
+        };
+
         Facets {
             harnesses,
             scope_kinds,
             bundles: bundle_facets,
             owners: owners.into_values().collect(),
             origins: origins.into_values().collect(),
+            jstack,
         }
     }
 
@@ -901,6 +926,277 @@ pub(crate) fn alias_views(snap: &Snapshot, store: &crate::aliases::AliasStore) -
         .collect()
 }
 
+// ---------------------------------------------------------------- jstack
+
+#[derive(Serialize, Type, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum JstackKind {
+    /// The body is the repo folder itself, reached through a junction.
+    Owned,
+    /// A separate folder with the same name as a repo skill.
+    CopyOf,
+    /// Listed in skill-sources.txt and installed by the skills CLI.
+    Declared,
+}
+
+#[derive(Serialize, Type, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum DriftKind {
+    InSync,
+    UncommittedEdits,
+    Behind,
+    Diverged,
+    ContentDiffers,
+}
+
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JstackRelationView {
+    pub kind: JstackKind,
+    /// The skill's name in the repo or in skill-sources.txt.
+    pub skill: String,
+    pub source: Option<String>,
+    pub drift: DriftKind,
+    /// Anything but in sync.
+    pub drifted: bool,
+    /// Badge text: owned, copy or declared.
+    pub label: String,
+    /// Badge text for the drift, None when in sync.
+    pub drift_label: Option<String>,
+    /// One sentence for the detail pane.
+    pub note: String,
+    /// Repo-relative files that differ from HEAD, for uncommitted edits.
+    pub files: Vec<String>,
+}
+
+fn plural_commits(n: u32) -> String {
+    format!("{n} commit{}", if n == 1 { "" } else { "s" })
+}
+
+fn plural_files(n: usize) -> String {
+    format!("{n} file{}", if n == 1 { "" } else { "s" })
+}
+
+fn plural_skills(n: usize) -> String {
+    format!("{n} skill{}", if n == 1 { "" } else { "s" })
+}
+
+fn relation_view(r: &JstackRelation) -> JstackRelationView {
+    let (kind, skill, source, drift) = match r {
+        JstackRelation::Owned { skill, drift } => (JstackKind::Owned, skill, None, Some(drift)),
+        JstackRelation::CopyOf { skill, drift } => (JstackKind::CopyOf, skill, None, Some(drift)),
+        JstackRelation::Declared { source, skill } => (JstackKind::Declared, skill, Some(source.clone()), None),
+    };
+    let (drift_kind, drift_label, drift_note, files) = match drift {
+        None | Some(Drift::InSync) => (DriftKind::InSync, None, None, Vec::new()),
+        Some(Drift::UncommittedEdits { files }) => (
+            DriftKind::UncommittedEdits,
+            Some("edited".to_owned()),
+            Some(format!("{} under skills/{skill} differ from the last commit in your jstack clone.", plural_files(files.len()))),
+            files.iter().map(|f| path_str(f)).collect(),
+        ),
+        Some(Drift::Behind { commits }) => (
+            DriftKind::Behind,
+            Some(format!("behind {commits}")),
+            Some(format!("Your clone is {} behind its upstream as of the last fetch. A pull brings this skill up to date.", plural_commits(*commits))),
+            Vec::new(),
+        ),
+        Some(Drift::Diverged { ahead, behind }) => (
+            DriftKind::Diverged,
+            Some("diverged".to_owned()),
+            Some(format!(
+                "Your clone has {} the upstream lacks and lacks {} the upstream has, so a fast-forward pull cannot update it.",
+                plural_commits(*ahead),
+                plural_commits(*behind)
+            )),
+            Vec::new(),
+        ),
+        Some(Drift::ContentDiffers { .. }) => (
+            DriftKind::ContentDiffers,
+            Some("differs".to_owned()),
+            Some(format!("This folder is a separate copy, and its files differ from skills/{skill} in your jstack clone.")),
+            Vec::new(),
+        ),
+    };
+    let (label, lead) = match kind {
+        JstackKind::Owned => ("owned", format!("This is your jstack skill skills/{skill}, linked into the harness.")),
+        JstackKind::CopyOf => ("copy", format!("A separate copy of your jstack skill {skill}, not linked to the clone.")),
+        JstackKind::Declared => ("declared", format!("Declared in skill-sources.txt as {skill} from {}.", source.as_deref().unwrap_or("its source"))),
+    };
+    let note = match &drift_note {
+        Some(d) => format!("{lead} {d}"),
+        None if kind == JstackKind::Declared => lead,
+        None => format!("{lead} It matches the repo."),
+    };
+    JstackRelationView {
+        kind,
+        skill: skill.clone(),
+        source,
+        drift: drift_kind,
+        drifted: drift_kind != DriftKind::InSync,
+        label: label.to_owned(),
+        drift_label,
+        note,
+        files,
+    }
+}
+
+/// The jstack tab: the clone's state and everything that relates this machine to it.
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JstackView {
+    pub repo: JstackRepoView,
+    /// Installed bodies that relate to the repo, ordered by skill name.
+    pub relations: Vec<JstackRelationRow>,
+    /// Repo skills a present harness does not have.
+    pub not_installed: Vec<NotInstalledRow>,
+    pub declared: Vec<DeclaredRow>,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JstackRepoView {
+    pub root: String,
+    pub remote: Option<String>,
+    /// None on a detached HEAD.
+    pub branch: Option<String>,
+    pub head: String,
+    pub upstream: Option<UpstreamView>,
+    /// When the clone last fetched or pulled. Ahead and behind are as old as this.
+    pub fetched_at: Option<String>,
+    /// Repo-relative paths under skills/ that differ from HEAD.
+    pub dirty: Vec<String>,
+    pub skill_count: u32,
+    pub can_sync: bool,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamView {
+    pub name: String,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JstackRelationRow {
+    /// The body's id, for jumping to it in the inventory.
+    pub skill_id: String,
+    pub name: String,
+    pub harnesses: Vec<Tag>,
+    pub relation: JstackRelationView,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NotInstalledRow {
+    pub harness: Tag,
+    pub skill: String,
+    pub reason: AbsenceKind,
+    /// The body that holds the name, when another skill already has it.
+    pub taken_by: Option<String>,
+    /// One sentence, shown on the row.
+    pub note: String,
+}
+
+#[derive(Serialize, Type, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum AbsenceKind {
+    /// Nothing there answers to the name, so a sync links it.
+    Absent,
+    /// Another skill has the name, and a sync keeps that one.
+    NameTaken,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclaredRow {
+    pub source: String,
+    pub skills: Vec<DeclaredSkill>,
+    /// The ones no installed skills-CLI folder provides. This is what Install missing sends.
+    pub missing: Vec<String>,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclaredSkill {
+    pub name: String,
+    pub installed: bool,
+}
+
+pub(crate) fn jstack_view(snap: &Snapshot, repo: &RepoState, report: &JstackReport) -> JstackView {
+    let (tallies, tracking) = (Tallies::new(), TrackingSince::new());
+    let cx = Cx::new(snap, &tallies, &tracking, Some(report));
+
+    let relations = report
+        .relations
+        .iter()
+        .filter_map(|(id, rel)| {
+            let body = snap.bodies.get(id)?;
+            Some(JstackRelationRow {
+                skill_id: id.as_str().to_owned(),
+                name: body.manifest.name.clone(),
+                harnesses: cx.row_harnesses(body),
+                relation: relation_view(rel),
+            })
+        })
+        .collect();
+
+    let not_installed = report
+        .not_installed
+        .iter()
+        .map(|n| {
+            let harness = cx.tag(n.harness);
+            let (reason, taken_by, note) = match &n.why {
+                Absence::Absent => (AbsenceKind::Absent, None, format!("{} has no skill by this name. A sync links it.", harness.label)),
+                Absence::NameTaken { by } => {
+                    let holder = snap
+                        .bodies
+                        .get(by)
+                        .map_or_else(String::new, |b| format!(" ({}, {})", cx.origin(&b.origin).label, path_str(b.dir.as_path())));
+                    (
+                        AbsenceKind::NameTaken,
+                        Some(by.as_str().to_owned()),
+                        format!("{} already has a different skill with this name{holder}, so a sync keeps that one.", harness.label),
+                    )
+                }
+            };
+            NotInstalledRow { harness, skill: n.skill.clone(), reason, taken_by, note }
+        })
+        .collect();
+
+    let declared = repo
+        .declared
+        .iter()
+        .map(|d| {
+            let is_missing = |s: &String| report.declared_missing.iter().any(|m| m.source == d.source && &m.skill == s);
+            DeclaredRow {
+                source: d.source.clone(),
+                skills: d.skills.iter().map(|s| DeclaredSkill { name: s.clone(), installed: !is_missing(s) }).collect(),
+                missing: d.skills.iter().filter(|s| is_missing(s)).cloned().collect(),
+            }
+        })
+        .collect();
+
+    JstackView {
+        repo: JstackRepoView {
+            root: path_str(&repo.root),
+            remote: repo.remote.clone(),
+            branch: repo.branch.clone(),
+            head: repo.head.chars().take(7).collect(),
+            upstream: repo.upstream.as_ref().map(|u| UpstreamView { name: u.name.clone(), ahead: u.ahead, behind: u.behind }),
+            fetched_at: repo.fetched_at.map(|t| t.to_rfc3339()),
+            dirty: repo.dirty.iter().map(|p| path_str(p)).collect(),
+            skill_count: repo.skills.len() as u32,
+            can_sync: repo.has_sync_script,
+        },
+        relations,
+        not_installed,
+        declared,
+    }
+}
+
 // ---------------------------------------------------------------- actions
 
 /// A change the UI asks for. It names things only by ids the core issued, never by path.
@@ -913,6 +1209,12 @@ pub enum ActionRequest {
     Restore { shelf: String },
     BundleEnable { bundle: String },
     BundleDisable { bundle: String },
+    /// Run jstack's own sync-skills.ps1.
+    JstackSync,
+    /// A fast-forward pull in the jstack clone.
+    JstackPull,
+    /// Install, or update, skills from one line of skill-sources.txt. Both must be declared there.
+    JstackInstallDeclared { source: String, skills: Vec<String> },
 }
 
 #[derive(Serialize, Type)]
@@ -1019,7 +1321,7 @@ pub enum StepResultView {
 }
 
 /// Resolves the request's ids against the snapshot. An id the snapshot does not know is an error.
-pub(crate) fn parse_action(snap: &Snapshot, req: &ActionRequest) -> Result<ManageAction, CoreError> {
+pub(crate) fn parse_action(snap: &Snapshot, repo: Option<&RepoState>, req: &ActionRequest) -> Result<ManageAction, CoreError> {
     let unknown = |id: &str| CoreError::UnknownId { id: id.to_owned() };
     let mount = |id: &str| snap.mounts.keys().find(|m| m.as_str() == id).cloned().ok_or_else(|| unknown(id));
     let bundle = |id: &str| snap.bundles.keys().find(|b| b.as_str() == id).cloned().ok_or_else(|| unknown(id));
@@ -1034,12 +1336,22 @@ pub(crate) fn parse_action(snap: &Snapshot, req: &ActionRequest) -> Result<Manag
         }
         ActionRequest::BundleEnable { bundle: id } => ManageAction::Bundle(bundle(id)?, BundleOp::Enable),
         ActionRequest::BundleDisable { bundle: id } => ManageAction::Bundle(bundle(id)?, BundleOp::Disable),
+        ActionRequest::JstackSync => ManageAction::Jstack(JstackAction::Sync),
+        ActionRequest::JstackPull => ManageAction::Jstack(JstackAction::Pull),
+        // The names end up on a command line, so only ones skill-sources.txt declares get through.
+        ActionRequest::JstackInstallDeclared { source, skills } => {
+            let declared = repo.and_then(|r| r.declared.iter().find(|d| &d.source == source)).ok_or_else(|| unknown(source))?;
+            if let Some(bad) = skills.iter().find(|s| !declared.skills.contains(s)) {
+                return Err(unknown(bad));
+            }
+            ManageAction::Jstack(JstackAction::InstallDeclared { source: source.clone(), skills: skills.clone() })
+        }
     })
 }
 
 pub(crate) fn plan_view(snap: &Snapshot, id: String, plan: &Plan) -> PlanView {
     let (tallies, tracking) = (Tallies::new(), TrackingSince::new());
-    let cx = Cx::new(snap, &tallies, &tracking);
+    let cx = Cx::new(snap, &tallies, &tracking, None);
     let (title, confirm) = cx.action_title(&plan.action);
     PlanView {
         id,
@@ -1133,6 +1445,11 @@ impl Cx<'_> {
                 let verb = if *op == BundleOp::Enable { "Enable" } else { "Disable" };
                 (format!("{verb} plugin {}", self.bundle_name(b)), format!("{verb} plugin"))
             }
+            ManageAction::Jstack(JstackAction::Sync) => ("Sync jstack skills".into(), "Run sync".into()),
+            ManageAction::Jstack(JstackAction::Pull) => ("Pull the jstack clone".into(), "Pull".into()),
+            ManageAction::Jstack(JstackAction::InstallDeclared { source, skills }) => {
+                (format!("Install {} from {source}", plural_skills(skills.len())), "Install".into())
+            }
         }
     }
 
@@ -1156,6 +1473,17 @@ impl Cx<'_> {
             Effect::BodyRecycled { dir } => {
                 EffectView { harness: None, text: format!("The folder {} and everything in it goes to the Recycle Bin.", path_str(dir)) }
             }
+            Effect::UpdatesClone => {
+                EffectView { harness: None, text: "Updates your jstack clone (git pull) first, which changes every skill linked from it.".into() }
+            }
+            Effect::RelinksJstack => EffectView {
+                harness: None,
+                text: "Links jstack's skills into your harnesses the way jstack decides, and rewrites ~/.jstack-links.txt.".into(),
+            },
+            Effect::InstallsDeclared { source, skills } => EffectView {
+                harness: None,
+                text: format!("Installs or updates {} from {source} with the skills CLI, which needs the network.", skills.join(", ")),
+            },
         }
     }
 
