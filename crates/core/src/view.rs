@@ -31,6 +31,8 @@ pub struct Inventory {
     pub facets: Facets,
     /// Earliest transcript time per harness. A harness missing here has no usage data, which is not the same as zero uses.
     pub tracking_since: Vec<TrackingView>,
+    /// Links the user confirmed from an old usage key to an installed skill. The UI lists them so each can be undone.
+    pub aliases: Vec<AliasView>,
 }
 
 /// An id plus the text to show for it.
@@ -272,6 +274,8 @@ pub struct RefreshReport {
 pub enum CoreError {
     UnknownId { id: String },
     Io { message: String },
+    /// The request was well formed but cannot be done, such as aliasing a key that still resolves.
+    Invalid { message: String },
 }
 
 // ---------------------------------------------------------------- builders
@@ -301,6 +305,7 @@ pub(crate) fn inventory(snap: &Snapshot, tallies: &Tallies, tracking: &TrackingS
         bundles,
         facets,
         tracking_since: tracking_view,
+        aliases: Vec::new(),
     }
 }
 
@@ -760,6 +765,90 @@ fn name_key(k: &InvocationKey) -> Option<String> {
 pub(crate) fn path_str(p: &Path) -> String {
     let s = p.to_string_lossy();
     s.strip_prefix(r"\\?\UNC\").map(|r| format!(r"\\{r}")).or_else(|| s.strip_prefix(r"\\?\").map(str::to_owned)).unwrap_or_else(|| s.into_owned())
+}
+
+// ---------------------------------------------------------------- aliases
+
+/// A proposed link from a ghost usage key to an installed skill. Nothing is merged until the user confirms it.
+#[derive(Serialize, Type, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AliasSuggestionView {
+    pub harness: Tag,
+    /// Wire form of the ghost key. Pass it back unchanged to `confirm_alias`.
+    pub from: String,
+    pub from_label: String,
+    /// Wire form of the installed skill's key.
+    pub to: String,
+    pub to_label: String,
+    pub target_body: String,
+    pub events: u32,
+    pub rule: String,
+    /// One line the UI shows beside the confirm button.
+    pub reason: String,
+}
+
+/// A confirmed link. `target_body` is None when the target skill is no longer installed.
+#[derive(Serialize, Type, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AliasView {
+    pub harness: Tag,
+    pub from: String,
+    pub from_label: String,
+    pub to: String,
+    pub to_label: String,
+    pub target_body: Option<String>,
+}
+
+fn key_label(key: &InvocationKey) -> String {
+    match key {
+        InvocationKey::Name(n) => n.clone(),
+        InvocationKey::SkillFile(p) => path_str(p),
+    }
+}
+
+fn harness_tag(snap: &Snapshot, h: HarnessId) -> Tag {
+    let label = snap.harnesses.iter().find(|i| i.id == h).map_or(h.as_str(), |i| i.label);
+    Tag { id: h.as_str().to_owned(), label: label.to_owned() }
+}
+
+pub(crate) fn alias_suggestion_views(snap: &Snapshot, suggestions: &[crate::aliases::Suggestion]) -> Vec<AliasSuggestionView> {
+    use crate::aliases::{key_to_wire, RuleId};
+    suggestions
+        .iter()
+        .map(|s| {
+            let (rule, reason) = match s.rule {
+                RuleId::DropPrefix => ("dropPrefix", "Same name once the old plugin prefix is dropped."),
+                RuleId::SkillFolder => ("skillFolder", "Same name as the folder this SKILL.md was read from."),
+            };
+            AliasSuggestionView {
+                harness: harness_tag(snap, s.harness),
+                from: key_to_wire(&s.from),
+                from_label: key_label(&s.from),
+                to: key_to_wire(&s.to),
+                to_label: key_label(&s.to),
+                target_body: s.target_body.as_str().to_owned(),
+                events: s.events,
+                rule: rule.to_owned(),
+                reason: reason.to_owned(),
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn alias_views(snap: &Snapshot, store: &crate::aliases::AliasStore) -> Vec<AliasView> {
+    use crate::aliases::key_to_wire;
+    store
+        .aliases()
+        .iter()
+        .map(|a| AliasView {
+            harness: harness_tag(snap, a.harness),
+            from: key_to_wire(&a.from),
+            from_label: key_label(&a.from),
+            to: key_to_wire(&a.to),
+            to_label: key_label(&a.to),
+            target_body: snap.resolve(a.harness, &a.to).map(|b| b.as_str().to_owned()),
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- SKILL.md
