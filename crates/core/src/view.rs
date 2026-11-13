@@ -1414,7 +1414,7 @@ fn step_view(s: &Step) -> StepView {
         Step::Stash { dir, stash, .. } => (StepKind::Stash, "Move the folder onto skilltab's shelf", arrow(dir.as_path(), stash)),
         Step::Relink { entry, target, .. } => (StepKind::Relink, "Recreate the link", arrow(entry, target)),
         Step::Unstash { stash, to, .. } => (StepKind::Unstash, "Move the folder back from the shelf", arrow(stash, to)),
-        Step::Run { command } => (StepKind::Run, "Run the harness's own command", command.display()),
+        Step::Run { command } => (StepKind::Run, "Run this command", command.display()),
     };
     StepView { kind, text: text.to_owned(), detail }
 }
@@ -1482,9 +1482,10 @@ impl Cx<'_> {
             Effect::BodyRecycled { dir } => {
                 EffectView { harness: None, text: format!("The folder {} and everything in it goes to the Recycle Bin.", path_str(dir)) }
             }
-            Effect::UpdatesClone => {
-                EffectView { harness: None, text: "Updates your jstack clone (git pull) first, which changes every skill linked from it.".into() }
-            }
+            Effect::UpdatesClone { first } => EffectView {
+                harness: None,
+                text: format!("Updates your jstack clone (git pull){}, which changes every skill linked from it.", if *first { " first" } else { "" }),
+            },
             Effect::RelinksJstack => EffectView {
                 harness: None,
                 text: "Links jstack's skills into your harnesses the way jstack decides, and rewrites ~/.jstack-links.txt.".into(),

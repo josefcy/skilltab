@@ -420,11 +420,11 @@ fn jstack_plans_are_one_run_step_with_exactly_the_command_and_the_clone_as_cwd()
             cwd: Some(root.clone()),
         }
     );
-    assert_eq!(sync.effects, vec![Effect::UpdatesClone, Effect::RelinksJstack]);
+    assert_eq!(sync.effects, vec![Effect::UpdatesClone { first: true }, Effect::RelinksJstack]);
 
     let pull = jstack_plan(&h, JstackAction::Pull);
     assert_eq!(*command(&pull), ExternalCommand { program: text("git"), args: vec![text("pull"), text("--ff-only")], cwd: Some(root.clone()) });
-    assert_eq!(pull.effects, vec![Effect::UpdatesClone]);
+    assert_eq!(pull.effects, vec![Effect::UpdatesClone { first: false }]);
 
     let skills = vec![text("one"), text("two")];
     let install = jstack_plan(&h, JstackAction::InstallDeclared { source: text("owner/pack"), skills: skills.clone() });

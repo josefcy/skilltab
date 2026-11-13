@@ -61,7 +61,8 @@ pub(crate) enum Effect {
     AlsoBreaks { mount: MountId, via: PathBuf },
     BodyRecycled { dir: PathBuf },
     /// The command moves the jstack clone to a new commit, and every skill linked from the clone changes with it.
-    UpdatesClone,
+    /// `first` is true when that is a side step of something else, as with sync-skills.ps1.
+    UpdatesClone { first: bool },
     /// Links jstack's skills into the harnesses and rewrites ~/.jstack-links.txt.
     RelinksJstack,
     InstallsDeclared { source: String, skills: Vec<String> },
@@ -259,7 +260,7 @@ fn jstack(repo: Option<&RepoState>, action: &JstackAction, p: &mut Plan) {
     }
     let JstackCommand { command, updates_clone } = repo.command(action);
     if updates_clone {
-        p.effects.push(Effect::UpdatesClone);
+        p.effects.push(Effect::UpdatesClone { first: !matches!(action, JstackAction::Pull) });
     }
     match action {
         JstackAction::Sync => p.effects.push(Effect::RelinksJstack),

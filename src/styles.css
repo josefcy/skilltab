@@ -311,7 +311,7 @@ code,
 
 table.grid {
   width: 100%;
-  min-width: 920px;
+  min-width: 900px;
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
@@ -381,25 +381,28 @@ table.grid {
 }
 
 .c-name {
-  width: 150px;
+  width: 130px;
 }
 .c-harness {
-  width: 174px;
+  width: 150px;
 }
 .c-scope {
-  width: 104px;
+  width: 70px;
 }
 .c-owner {
-  width: 108px;
+  width: 96px;
 }
 .c-origin {
-  width: 118px;
+  width: 100px;
+}
+.c-jstack {
+  width: 110px;
 }
 .c-uses {
-  width: 80px;
+  width: 74px;
 }
 .c-last {
-  width: 82px;
+  width: 76px;
 }
 
 .name {
@@ -1272,4 +1275,8 @@ table.usage {
 .manage:disabled {
   color: var(--faint);
   border-color: var(--line);
+}
+
+.panel-list {
+  grid-template-columns: minmax(0, 1fr);
 }

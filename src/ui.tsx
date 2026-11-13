@@ -37,10 +37,10 @@ export function plural(n: number, one: string, many = one + "s"): string {
 }
 
 /** How a skill relates to the jstack repo, with its drift when it has any. The full sentence is the tooltip. */
-export function JstackBadge({ j }: { j: JstackRelationView }) {
+export function JstackBadge({ j, bare }: { j: JstackRelationView; /** Drop the "jstack" word where the column already says it. */ bare?: boolean }) {
   return (
     <span className="jbadges" title={j.note}>
-      <span className="jbadge">jstack {j.label}</span>
+      <span className="jbadge">{bare ? j.label : `jstack ${j.label}`}</span>
       {j.driftLabel && <span className="state warn">{j.driftLabel}</span>}
     </span>
   );

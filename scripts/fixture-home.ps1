@@ -89,6 +89,7 @@ $lines = foreach ($i in 1..3) {
         message = @{ content = @(@{ type = 'tool_use'; id = "toolu_$i"; name = 'Skill'; input = @{ skill = 'mattpocock-skills:notes-real' } }) }
     } | ConvertTo-Json -Depth 6 -Compress
 }
-Set-Content -Encoding utf8 (Join-Path $projects 'session.jsonl') $lines
+# Windows PowerShell's utf8 writes a BOM, which would spoil the first JSON line.
+[System.IO.File]::WriteAllLines((Join-Path $projects 'session.jsonl'), [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Output "fixture home: $full"

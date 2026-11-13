@@ -53,7 +53,7 @@ export function UsagePanel({ suggestions, confirmed, onPick }: Props) {
             disabled={sorted.length === 0 || busy !== null}
             onClick={() => run("all", () => commands.confirmAliases(sorted.map(pick)))}
           >
-            {busy === "all" ? "Confirming…" : `Confirm all (${plural(total, "event")})`}
+            {busy === "all" ? "Confirming…" : sorted.length === 0 ? "Confirm all" : `Confirm all (${plural(total, "event")})`}
           </button>
           <span className="sub">{sorted.length === 0 ? "No suggestions." : `${plural(sorted.length, "suggestion")} in the list.`}</span>
         </div>

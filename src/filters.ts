@@ -1,6 +1,6 @@
 import type { SkillRow } from "./bindings";
 
-export type SortKey = "name" | "description" | "harnesses" | "scopes" | "owner" | "origin" | "uses" | "lastUsed";
+export type SortKey = "name" | "description" | "harnesses" | "scopes" | "owner" | "origin" | "jstack" | "uses" | "lastUsed";
 export type Sort = { key: SortKey; dir: "asc" | "desc" };
 
 export type Filters = {
@@ -89,6 +89,8 @@ function compare(a: SkillRow, b: SkillRow, key: SortKey): number {
       return text(a.owners.map((o) => o.label).join(), b.owners.map((o) => o.label).join());
     case "origin":
       return text(a.origin.label + (a.origin.detail ?? ""), b.origin.label + (b.origin.detail ?? ""));
+    case "jstack":
+      return text(a.jstack ? a.jstack.label + (a.jstack.driftLabel ?? "") : "~", b.jstack ? b.jstack.label + (b.jstack.driftLabel ?? "") : "~");
     case "uses":
       return (a.usage.tracked ? a.usage.total : -1) - (b.usage.tracked ? b.usage.total : -1);
     case "lastUsed":

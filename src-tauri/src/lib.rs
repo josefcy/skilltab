@@ -25,6 +25,9 @@ pub fn run() {
                 Some(home) => (home.clone(), home.join(".skilltab-data")),
                 None => (app.path().home_dir()?, app.path().local_data_dir()?.join("skilltab")),
             };
+            // SKILLTAB_DATA moves only the data dir, so the real machine can be looked at with a copy of its usage index
+            // and the scan's usage ingest never writes the real one.
+            let data_dir = std::env::var_os("SKILLTAB_DATA").map(PathBuf::from).unwrap_or(data_dir);
             let jstack = home.join("jstack");
             let env = Env { home, projects: Vec::new(), jstack_root: jstack.is_dir().then_some(jstack) };
             app.manage(Skilltab::open(env, data_dir).map_err(|e| format!("{e:?}"))?);
