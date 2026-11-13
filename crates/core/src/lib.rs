@@ -6,6 +6,7 @@
 mod fsutil;
 #[allow(dead_code, unused_variables)]
 mod harness;
+mod jstack;
 #[allow(dead_code)]
 mod model;
 mod projects;
@@ -30,6 +31,7 @@ pub use model::{
 };
 pub use model::{HarnessId, HarnessInfo, LinkPath, ProjectRoot, RealDir, Tally, TrackingSince};
 pub use harness::InvocationKind;
+pub use jstack::{fetch as jstack_fetch, report as jstack_report, Absence, DeclaredMissing, DeclaredSource, Drift, JstackAction, JstackCommand, JstackError, JstackReport, JstackRelation, NotInstalled, RepoSkill, RepoState, Upstream};
 pub use usage::{IngestProgress, IngestReport, UsageError, UsageIndex, UsagePoint};
 
 pub struct Env {
@@ -118,11 +120,16 @@ impl Skilltab {
 
 fn build(env: &Env, data_dir: &Path, revision: u64) -> Current {
     let started = Instant::now();
-    let projects = scan::project_roots(&project_candidates(env));
-    let provenance = provenance::Provenance::load(env, env.jstack_root.as_deref());
-    let snapshot = scan::scan(env, harness::registry(), &projects, &provenance, Vec::new(), revision);
+    let snapshot = scan_disk(env, revision);
     let usage = load_usage(env, data_dir);
     Current { snapshot: Arc::new(snapshot), usage: Arc::new(usage), scan_ms: started.elapsed().as_millis() as u32 }
+}
+
+/// One scan of every harness root, with no usage. Shared by the facade and by tests that only need a snapshot.
+pub(crate) fn scan_disk(env: &Env, revision: u64) -> Snapshot {
+    let projects = scan::project_roots(&project_candidates(env));
+    let provenance = provenance::Provenance::load(env, env.jstack_root.as_deref());
+    scan::scan(env, harness::registry(), &projects, &provenance, Vec::new(), revision)
 }
 
 /// Projects named in settings plus the ones transcripts mention. The usage index will supply the second part.
