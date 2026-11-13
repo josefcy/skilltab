@@ -4,6 +4,8 @@
 
 // These modules carry hooks for the usage and manage units (parsers, bundle commands, plan re-checks) that nothing calls yet.
 mod fsutil;
+#[allow(dead_code)]
+mod manage;
 #[allow(dead_code, unused_variables)]
 mod harness;
 #[allow(dead_code)]
