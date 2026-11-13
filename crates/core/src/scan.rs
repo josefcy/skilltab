@@ -309,7 +309,7 @@ fn mount_id(harness: HarnessId, entry: &Path) -> MountId {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve::strip_verbatim;
+    use crate::fsutil::strip_verbatim;
     use super::*;
     use crate::harness::{ParserState, SessionParser, UsageSource};
     use std::fs;

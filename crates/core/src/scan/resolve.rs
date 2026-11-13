@@ -1,6 +1,7 @@
 //! Follows one entry through junctions and symlinks, one hop at a time. The only place that
 //! mints `LinkPath` and `RealDir`.
 
+use crate::fsutil::{file_id, strip_verbatim};
 use crate::model::{norm_key, LinkPath, RealDir};
 use std::collections::HashSet;
 use std::fs;
@@ -87,42 +88,6 @@ fn canonical_parent(target: &Path) -> PathBuf {
         },
         _ => target.to_path_buf(),
     }
-}
-
-pub(super) fn strip_verbatim(p: PathBuf) -> PathBuf {
-    let s = p.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{rest}"))
-    } else if let Some(rest) = s.strip_prefix(r"\\?\").or_else(|| s.strip_prefix(r"\??\")) {
-        PathBuf::from(rest)
-    } else {
-        p
-    }
-}
-
-/// (volume serial, file index) of a directory. Two paths with the same pair are one folder.
-fn file_id(dir: &Path) -> io::Result<FileId> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-
-    let handle = fs::OpenOptions::new()
-        .access_mode(0)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(dir)?;
-    // SAFETY: BY_HANDLE_FILE_INFORMATION is plain data that the call fills in, and the handle
-    // stays open for the duration of the call.
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    let ok = unsafe { GetFileInformationByHandle(handle.as_raw_handle() as HANDLE, &mut info) };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok((info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)))
 }
 
 /// Re-check at apply time: is `link` still a link, and does it still point at `target`?
