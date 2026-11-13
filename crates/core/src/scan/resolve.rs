@@ -91,7 +91,7 @@ fn canonical_parent(target: &Path) -> PathBuf {
 }
 
 /// Where the link at `path` points, spelled as a scan spells the next hop. None when `path` is not a link.
-pub(crate) fn link_target(path: &Path) -> Option<PathBuf> {
+fn link_target(path: &Path) -> Option<PathBuf> {
     let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !is_link {
         return None;

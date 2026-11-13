@@ -5,8 +5,10 @@
 //! Every label, one-line explanation and derived verdict ("unused", "problem") is decided here,
 //! so the UI renders what it is sent and filters on these fields without domain rules of its own.
 
+use crate::harness::BundleOp;
+use crate::manage::{ApplyOutcome, Blocker, Effect, ManageAction, Plan, Step, StepResult};
 use crate::model::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
@@ -31,6 +33,28 @@ pub struct Inventory {
     pub facets: Facets,
     /// Earliest transcript time per harness. A harness missing here has no usage data, which is not the same as zero uses.
     pub tracking_since: Vec<TrackingView>,
+    /// Mounts skilltab took away and can put back. They are the disabled rows.
+    pub shelf: Vec<ShelfRow>,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ShelfRow {
+    pub id: String,
+    pub name: String,
+    pub harness: Tag,
+    pub entry: String,
+    pub reason: ShelfReasonView,
+    /// What restoring does, as a sentence.
+    pub note: String,
+    pub at: String,
+}
+
+#[derive(Serialize, Type, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum ShelfReasonView {
+    Disabled,
+    Removed,
 }
 
 /// An id plus the text to show for it.
@@ -301,6 +325,7 @@ pub(crate) fn inventory(snap: &Snapshot, tallies: &Tallies, tracking: &TrackingS
         bundles,
         facets,
         tracking_since: tracking_view,
+        shelf: cx.shelf_rows(),
     }
 }
 
@@ -674,6 +699,31 @@ impl<'a> Cx<'a> {
         }
     }
 
+    fn shelf_rows(&self) -> Vec<ShelfRow> {
+        let mut rows: Vec<ShelfRow> = self
+            .snap
+            .shelf
+            .iter()
+            .map(|e| ShelfRow {
+                id: e.id.as_str().to_owned(),
+                name: e.name.clone(),
+                harness: self.tag(e.harness),
+                entry: path_str(&e.entry),
+                reason: match e.reason {
+                    ShelfReason::Disabled => ShelfReasonView::Disabled,
+                    ShelfReason::Removed => ShelfReasonView::Removed,
+                },
+                note: match &e.held {
+                    Held::Link { target } => format!("Restoring recreates the link to {}.", path_str(target)),
+                    Held::Folder { stash } => format!("The folder is kept at {} until it is restored.", path_str(stash)),
+                },
+                at: e.at.to_rfc3339(),
+            })
+            .collect();
+        rows.sort_by(|a, b| b.at.cmp(&a.at));
+        rows
+    }
+
     fn owner_note(&self, m: &Mount) -> String {
         match &m.owner {
             Ownership::JstackSync => "Listed in ~/.jstack-links.txt, so jstack's sync recreates this link at the next session start.".into(),
@@ -760,6 +810,319 @@ fn name_key(k: &InvocationKey) -> Option<String> {
 pub(crate) fn path_str(p: &Path) -> String {
     let s = p.to_string_lossy();
     s.strip_prefix(r"\\?\UNC\").map(|r| format!(r"\\{r}")).or_else(|| s.strip_prefix(r"\\?\").map(str::to_owned)).unwrap_or_else(|| s.into_owned())
+}
+
+// ---------------------------------------------------------------- actions
+
+/// A change the UI asks for. It names things only by ids the core issued, never by path.
+#[derive(Deserialize, Type, Clone, Debug)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ActionRequest {
+    RemoveMount { mount: String },
+    DeleteBody { skill: String },
+    Disable { mount: String },
+    Restore { shelf: String },
+    BundleEnable { bundle: String },
+    BundleDisable { bundle: String },
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanView {
+    pub id: String,
+    pub title: String,
+    /// The confirm button's label.
+    pub confirm: String,
+    pub steps: Vec<StepView>,
+    pub effects: Vec<EffectView>,
+    pub blockers: Vec<BlockerView>,
+    /// No blockers and at least one step. The confirm button is enabled only then.
+    pub ready: bool,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StepView {
+    pub kind: StepKind,
+    pub text: String,
+    /// The path or command the step works on.
+    pub detail: String,
+}
+
+#[derive(Serialize, Type, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum StepKind {
+    RemoveLink,
+    Recycle,
+    Stash,
+    Relink,
+    Unstash,
+    Run,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectView {
+    pub harness: Option<Tag>,
+    pub text: String,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockerView {
+    pub kind: BlockerKind,
+    pub reason: String,
+    pub remedy: String,
+}
+
+#[derive(Serialize, Type, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum BlockerKind {
+    RecreatedBy,
+    PartOfBundle,
+    SharedBody,
+    InsideJstackRepo,
+    HarnessBuiltin,
+    Unsupported,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyReport {
+    pub outcome: ApplyOutcomeKind,
+    /// One per planned step, in order, so the UI shows which ran.
+    pub steps: Vec<StepRunView>,
+    /// Why a stale plan was refused.
+    pub reasons: Vec<String>,
+    /// Output of any command the plan ran.
+    pub output: Vec<String>,
+    /// The inventory revision after the refresh that follows an apply.
+    pub revision: u32,
+}
+
+#[derive(Serialize, Type, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum ApplyOutcomeKind {
+    Applied,
+    /// A step failed. The steps before it ran, the ones after did not.
+    Failed,
+    /// The disk changed since planning. Nothing ran, and the UI plans again.
+    Stale,
+    Refused,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StepRunView {
+    pub text: String,
+    pub detail: String,
+    pub result: StepResultView,
+    pub message: Option<String>,
+}
+
+#[derive(Serialize, Type, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum StepResultView {
+    Done,
+    Skipped,
+    Failed,
+    NotRun,
+}
+
+/// Resolves the request's ids against the snapshot. An id the snapshot does not know is an error.
+pub(crate) fn parse_action(snap: &Snapshot, req: &ActionRequest) -> Result<ManageAction, CoreError> {
+    let unknown = |id: &str| CoreError::UnknownId { id: id.to_owned() };
+    let mount = |id: &str| snap.mounts.keys().find(|m| m.as_str() == id).cloned().ok_or_else(|| unknown(id));
+    let bundle = |id: &str| snap.bundles.keys().find(|b| b.as_str() == id).cloned().ok_or_else(|| unknown(id));
+    Ok(match req {
+        ActionRequest::RemoveMount { mount: id } => ManageAction::RemoveMount(mount(id)?),
+        ActionRequest::Disable { mount: id } => ManageAction::Disable(mount(id)?),
+        ActionRequest::DeleteBody { skill } => {
+            ManageAction::DeleteBody(snap.bodies.keys().find(|b| b.as_str() == skill).cloned().ok_or_else(|| unknown(skill))?)
+        }
+        ActionRequest::Restore { shelf } => {
+            ManageAction::Restore(snap.shelf.iter().find(|e| e.id.as_str() == shelf).map(|e| e.id.clone()).ok_or_else(|| unknown(shelf))?)
+        }
+        ActionRequest::BundleEnable { bundle: id } => ManageAction::Bundle(bundle(id)?, BundleOp::Enable),
+        ActionRequest::BundleDisable { bundle: id } => ManageAction::Bundle(bundle(id)?, BundleOp::Disable),
+    })
+}
+
+pub(crate) fn plan_view(snap: &Snapshot, id: String, plan: &Plan) -> PlanView {
+    let (tallies, tracking) = (Tallies::new(), TrackingSince::new());
+    let cx = Cx::new(snap, &tallies, &tracking);
+    let (title, confirm) = cx.action_title(&plan.action);
+    PlanView {
+        id,
+        title,
+        confirm,
+        steps: plan.steps.iter().map(step_view).collect(),
+        effects: plan.effects.iter().map(|e| cx.effect_view(e)).collect(),
+        blockers: plan.blockers.iter().map(|b| cx.blocker_view(b)).collect(),
+        ready: plan.blockers.is_empty() && !plan.steps.is_empty(),
+    }
+}
+
+pub(crate) fn apply_report(plan: &Plan, outcome: ApplyOutcome, revision: u32) -> ApplyReport {
+    let run = |results: Vec<StepResult>| -> Vec<StepRunView> {
+        plan.steps
+            .iter()
+            .zip(results)
+            .map(|(s, r)| {
+                let v = step_view(s);
+                let (result, message) = match r {
+                    StepResult::Done => (StepResultView::Done, None),
+                    StepResult::Skipped => (StepResultView::Skipped, Some("Already done.".to_owned())),
+                    StepResult::Failed(m) => (StepResultView::Failed, Some(m)),
+                    StepResult::NotRun => (StepResultView::NotRun, None),
+                };
+                StepRunView { text: v.text, detail: v.detail, result, message }
+            })
+            .collect()
+    };
+    let empty = |outcome| ApplyReport { outcome, steps: Vec::new(), reasons: Vec::new(), output: Vec::new(), revision };
+    match outcome {
+        ApplyOutcome::Refused => empty(ApplyOutcomeKind::Refused),
+        ApplyOutcome::Stale { reasons } => ApplyReport { reasons, ..empty(ApplyOutcomeKind::Stale) },
+        ApplyOutcome::Applied { results, output } => {
+            let failed = results.iter().any(|r| matches!(r, StepResult::Failed(_)));
+            let kind = if failed { ApplyOutcomeKind::Failed } else { ApplyOutcomeKind::Applied };
+            ApplyReport { steps: run(results), output, ..empty(kind) }
+        }
+    }
+}
+
+fn step_view(s: &Step) -> StepView {
+    let arrow = |a: &Path, b: &Path| format!("{} → {}", path_str(a), path_str(b));
+    let (kind, text, detail) = match s {
+        Step::RemoveLink { link, target, shelve } => (
+            StepKind::RemoveLink,
+            if shelve.is_some() { "Remove the link and keep it on the shelf" } else { "Remove the link" },
+            arrow(link.as_path(), target),
+        ),
+        Step::Recycle { dir, .. } => (StepKind::Recycle, "Move the folder to the Recycle Bin", path_str(dir.as_path())),
+        Step::Stash { dir, stash, .. } => (StepKind::Stash, "Move the folder onto skilltab's shelf", arrow(dir.as_path(), stash)),
+        Step::Relink { entry, target, .. } => (StepKind::Relink, "Recreate the link", arrow(entry, target)),
+        Step::Unstash { stash, to, .. } => (StepKind::Unstash, "Move the folder back from the shelf", arrow(stash, to)),
+        Step::Run { command } => (StepKind::Run, "Run the harness's own command", command.display()),
+    };
+    StepView { kind, text: text.to_owned(), detail }
+}
+
+impl Cx<'_> {
+    /// (harness tag, skill name, entry) of a mount, for sentences about it.
+    fn mount_words(&self, id: &MountId) -> (Option<Tag>, String, String) {
+        match self.snap.mounts.get(id) {
+            Some(m) => {
+                let name = self.snap.bodies.get(&m.body).map_or_else(String::new, |b| b.manifest.name.clone());
+                (Some(self.tag(m.harness)), name, path_str(&m.entry))
+            }
+            None => (None, String::new(), id.as_str().to_owned()),
+        }
+    }
+
+    fn action_title(&self, a: &ManageAction) -> (String, String) {
+        let harness_label = |t: &Option<Tag>| t.as_ref().map_or_else(|| "this harness".to_owned(), |t| t.label.clone());
+        match a {
+            ManageAction::RemoveMount(m) => {
+                let (h, name, _) = self.mount_words(m);
+                (format!("Remove {name} from {}", harness_label(&h)), "Remove".into())
+            }
+            ManageAction::Disable(m) => {
+                let (h, name, _) = self.mount_words(m);
+                (format!("Disable {name} in {}", harness_label(&h)), "Disable".into())
+            }
+            ManageAction::DeleteBody(b) => {
+                let name = self.snap.bodies.get(b).map_or("this skill", |b| b.manifest.name.as_str());
+                (format!("Delete {name} everywhere"), "Move to Recycle Bin".into())
+            }
+            ManageAction::Restore(id) => match self.snap.shelf.iter().find(|e| &e.id == id) {
+                Some(e) => (format!("Restore {} in {}", e.name, self.tag(e.harness).label), "Restore".into()),
+                None => ("Restore".into(), "Restore".into()),
+            },
+            ManageAction::Bundle(b, op) => {
+                let verb = if *op == BundleOp::Enable { "Enable" } else { "Disable" };
+                (format!("{verb} plugin {}", self.bundle_name(b)), format!("{verb} plugin"))
+            }
+        }
+    }
+
+    fn effect_view(&self, e: &Effect) -> EffectView {
+        match e {
+            Effect::HarnessLosesSkill { mount } => {
+                let (harness, name, entry) = self.mount_words(mount);
+                let who = harness.as_ref().map_or("The harness", |t| t.label.as_str()).to_owned();
+                EffectView { text: format!("{who} stops loading {name} from {entry}."), harness }
+            }
+            Effect::HarnessGainsSkill { mount } => {
+                let (harness, name, entry) = self.mount_words(mount);
+                let who = harness.as_ref().map_or("The harness", |t| t.label.as_str()).to_owned();
+                EffectView { text: format!("{who} loads {name} from {entry} again."), harness }
+            }
+            Effect::AlsoBreaks { mount, via } => {
+                let (harness, _, entry) = self.mount_words(mount);
+                let who = harness.as_ref().map_or("another harness", |t| t.label.as_str()).to_owned();
+                EffectView { text: format!("Also breaks {who}'s mount at {entry}, which goes through {}.", path_str(via)), harness }
+            }
+            Effect::BodyRecycled { dir } => {
+                EffectView { harness: None, text: format!("The folder {} and everything in it goes to the Recycle Bin.", path_str(dir)) }
+            }
+        }
+    }
+
+    fn blocker_view(&self, b: &Blocker) -> BlockerView {
+        let (kind, reason, remedy) = match b {
+            Blocker::RecreatedBy { owner: Ownership::JstackSync, name } => (
+                BlockerKind::RecreatedBy,
+                "jstack's sync recreates this link at the next session start, so removing it would not last.".to_owned(),
+                format!("Add {name} to jstack/exclude.txt so the sync stops linking it, then rescan."),
+            ),
+            Blocker::RecreatedBy { owner: Ownership::ClaudeAiSync, .. } => (
+                BlockerKind::RecreatedBy,
+                "claude.ai sync writes this skill back on its next sync.".to_owned(),
+                "Remove the skill from your claude.ai account instead.".to_owned(),
+            ),
+            Blocker::RecreatedBy { owner, .. } => (
+                BlockerKind::RecreatedBy,
+                format!("{} puts this entry back.", owner_tag(owner).label),
+                "Remove it with the tool that made it.".to_owned(),
+            ),
+            Blocker::PartOfBundle { bundle } => (
+                BlockerKind::PartOfBundle,
+                format!("This skill ships inside plugin {}, and its plugin manager owns the folder.", self.bundle_name(bundle)),
+                "Turn the whole plugin off with Disable plugin instead.".to_owned(),
+            ),
+            Blocker::SharedBody { dependents } => {
+                let who: Vec<String> = dependents
+                    .iter()
+                    .map(|d| {
+                        let (h, _, entry) = self.mount_words(d);
+                        format!("{} at {entry}", h.map_or_else(String::new, |t| t.label))
+                    })
+                    .collect();
+                (
+                    BlockerKind::SharedBody,
+                    format!("This is the real folder, and {} still reach it through links.", who.join(", ")),
+                    "Use Delete everywhere to remove it for every harness, or remove those links first.".to_owned(),
+                )
+            }
+            Blocker::InsideJstackRepo => (
+                BlockerKind::InsideJstackRepo,
+                "This folder is your own source in the jstack clone.".to_owned(),
+                "Remove the links that point at it instead, or delete it in the jstack repo with git.".to_owned(),
+            ),
+            Blocker::HarnessBuiltin { harness } => {
+                let label = self.tag(*harness).label;
+                (
+                    BlockerKind::HarnessBuiltin,
+                    format!("This ships with {label}, which puts it back on every update."),
+                    format!("Turn it off in {label}'s own settings, if it allows that."),
+                )
+            }
+            Blocker::Unsupported { why, remedy } => (BlockerKind::Unsupported, why.clone(), remedy.clone()),
+        };
+        BlockerView { kind, reason, remedy }
+    }
 }
 
 // ---------------------------------------------------------------- SKILL.md

@@ -457,4 +457,4 @@ fn moved_error(e: io::Error, to: &Path) -> io::Error {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -2,26 +2,26 @@
 //!
 //! `Skilltab` is the facade. Callers see `view` types only, so the model can change without touching the shell.
 
-// These modules carry hooks for the usage and manage units (parsers, bundle commands, plan re-checks) that nothing calls yet.
 mod fsutil;
-#[allow(dead_code)]
 mod manage;
+// Hooks for the usage and jstack units that nothing calls yet.
 #[allow(dead_code, unused_variables)]
 mod harness;
-#[allow(dead_code)]
 mod model;
 mod projects;
 #[allow(dead_code)]
 mod provenance;
-#[allow(dead_code, unused_imports, unused_variables)]
+#[allow(unused_variables)]
 mod scan;
 mod usage;
 pub mod view;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
-use view::{CoreError, Inventory, RefreshReport, SkillDetail, Tallies};
+use view::{ActionRequest, ApplyOutcomeKind, ApplyReport, CoreError, Inventory, PlanView, RefreshReport, SkillDetail, Tallies};
 
 pub use projects::discover_projects;
 
@@ -47,6 +47,12 @@ pub struct Skilltab {
     data_dir: PathBuf,
     /// Replaced whole by `refresh`. Readers clone the Arcs and never wait on a scan.
     current: RwLock<Current>,
+    /// Written only by `apply`. Held across a whole apply, so two applies never interleave their steps.
+    shelf: Mutex<manage::Shelf>,
+    /// Plans handed to the UI, by id. Only a plan from the current revision can be applied.
+    plans: Mutex<HashMap<String, manage::Plan>>,
+    next_plan: AtomicU64,
+    os: Box<dyn manage::Os>,
 }
 
 #[derive(Clone)]
@@ -65,13 +71,27 @@ struct Usage {
 impl Skilltab {
     /// Builds the first snapshot, so the window can show the inventory at once.
     pub fn open(env: Env, data_dir: PathBuf) -> Result<Skilltab, CoreError> {
-        let current = build(&env, &data_dir, 1);
-        Ok(Skilltab { env, data_dir, current: RwLock::new(current) })
+        Skilltab::open_with(env, data_dir, Box::new(manage::SystemOs))
+    }
+
+    fn open_with(env: Env, data_dir: PathBuf, os: Box<dyn manage::Os>) -> Result<Skilltab, CoreError> {
+        let shelf = manage::Shelf::open(&data_dir).map_err(|e| CoreError::Io { message: e.to_string() })?;
+        let current = build(&env, &data_dir, shelf.entries(), 1);
+        Ok(Skilltab {
+            env,
+            data_dir,
+            current: RwLock::new(current),
+            shelf: Mutex::new(shelf),
+            plans: Mutex::new(HashMap::new()),
+            next_plan: AtomicU64::new(1),
+            os,
+        })
     }
 
     /// Rescans the disk and bumps the revision.
     pub fn refresh(&self) -> RefreshReport {
-        let next = build(&self.env, &self.data_dir, self.read().snapshot.revision + 1);
+        let shelved = lock(&self.shelf).entries().to_vec();
+        let next = build(&self.env, &self.data_dir, &shelved, self.read().snapshot.revision + 1);
         let report = RefreshReport {
             revision: next.snapshot.revision as u32,
             rows: next.snapshot.bodies.len() as u32,
@@ -108,6 +128,35 @@ impl Skilltab {
         reveal_in_explorer(&path).map_err(|e| CoreError::Io { message: e.to_string() })
     }
 
+    /// Plans a change against the current snapshot and keeps the plan for `apply`. Nothing on disk changes.
+    pub fn plan(&self, request: &ActionRequest) -> Result<PlanView, CoreError> {
+        let snap = self.read().snapshot;
+        let action = view::parse_action(&snap, request)?;
+        let plan = manage::plan(&snap, &lock(&self.shelf), action);
+        let id = format!("{}-{}", snap.revision, self.next_plan.fetch_add(1, Ordering::Relaxed));
+        let out = view::plan_view(&snap, id.clone(), &plan);
+        let mut plans = lock(&self.plans);
+        plans.retain(|_, p| p.revision == snap.revision);
+        plans.insert(id, plan);
+        Ok(out)
+    }
+
+    /// Runs a kept plan, then rescans. A plan from an older revision is refused as stale, so the UI plans again.
+    pub fn apply(&self, plan_id: &str) -> Result<ApplyReport, CoreError> {
+        let plan = lock(&self.plans).remove(plan_id).ok_or_else(|| CoreError::UnknownId { id: plan_id.to_owned() })?;
+        let revision = self.read().snapshot.revision;
+        if plan.revision != revision {
+            let stale = manage::ApplyOutcome::Stale { reasons: vec!["The inventory changed since this plan was made.".to_owned()] };
+            return Ok(view::apply_report(&plan, stale, revision as u32));
+        }
+        let outcome = manage::apply(&plan, &mut lock(&self.shelf), self.os.as_ref());
+        let mut report = view::apply_report(&plan, outcome, revision as u32);
+        if matches!(report.outcome, ApplyOutcomeKind::Applied | ApplyOutcomeKind::Failed) {
+            report.revision = self.refresh().revision;
+        }
+        Ok(report)
+    }
+
     /// The raw snapshot of the last refresh, for the `dump` example.
     pub fn snapshot(&self) -> Arc<Snapshot> {
         self.read().snapshot
@@ -118,11 +167,15 @@ impl Skilltab {
     }
 }
 
-fn build(env: &Env, data_dir: &Path, revision: u64) -> Current {
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn build(env: &Env, data_dir: &Path, shelved: &[model::ShelfEntry], revision: u64) -> Current {
     let started = Instant::now();
     let projects = scan::project_roots(&project_candidates(env));
     let provenance = provenance::Provenance::load(env, env.jstack_root.as_deref());
-    let snapshot = scan::scan(env, harness::registry(), &projects, &provenance, Vec::new(), revision);
+    let snapshot = scan::scan(env, harness::registry(), &projects, &provenance, shelved.to_vec(), revision);
     let usage = load_usage(env, data_dir);
     Current { snapshot: Arc::new(snapshot), usage: Arc::new(usage), scan_ms: started.elapsed().as_millis() as u32 }
 }
@@ -239,6 +292,120 @@ mod tests {
         assert_eq!(chain[0].kind, view::HopKind::Folder);
         assert!(matches!(app.skill("nope"), Err(CoreError::UnknownId { .. })));
         assert!(matches!(app.reveal(&d.mounts[0].summary.id, 5), Err(CoreError::UnknownId { .. })));
+    }
+
+    mod manage_flow {
+        use super::super::*;
+        use crate::manage::tests::{FakeOs, Home};
+        use std::sync::Arc;
+        use view::{ActionRequest, ApplyOutcomeKind, BlockerKind, StepResultView};
+
+        /// Shares the fake with the facade, so the test can read what it was asked to do.
+        struct Shared(Arc<FakeOs>);
+        impl manage::Os for Shared {
+            fn recycle(&self, dir: &RealDir) -> std::io::Result<()> {
+                self.0.recycle(dir)
+            }
+            fn run(&self, c: &harness::ExternalCommand) -> std::io::Result<String> {
+                self.0.run(c)
+            }
+        }
+
+        fn open(h: &Home) -> (Skilltab, Arc<FakeOs>) {
+            let os = Arc::new(FakeOs::default());
+            let app = Skilltab::open_with(h.env(), h.p(".skilltab-data"), Box::new(Shared(os.clone()))).unwrap();
+            (app, os)
+        }
+
+        fn mount_id(app: &Skilltab, entry: &Path) -> String {
+            let inv = app.inventory();
+            let m = inv.rows.iter().flat_map(|r| &r.mounts).find(|m| m.entry == entry.to_string_lossy());
+            m.unwrap_or_else(|| panic!("no mount at {}", entry.display())).id.clone()
+        }
+
+        #[test]
+        fn disable_shows_a_shelf_row_and_restore_brings_the_mount_back() {
+            let h = Home::new();
+            h.skill(".agents/skills/x", "x");
+            h.junction(".claude/skills/x", ".agents/skills/x");
+            let (app, _) = open(&h);
+            let mount = mount_id(&app, &h.p(".claude/skills/x"));
+
+            let plan = app.plan(&ActionRequest::Disable { mount }).unwrap();
+            assert!(plan.ready);
+            assert_eq!(plan.title, "Disable x in Claude Code");
+            let report = app.apply(&plan.id).unwrap();
+            assert_eq!(report.outcome, ApplyOutcomeKind::Applied);
+            assert_eq!(report.steps[0].result, StepResultView::Done);
+
+            let inv = app.inventory();
+            assert_eq!(inv.revision, report.revision);
+            assert_eq!(inv.shelf.len(), 1);
+            assert_eq!(inv.shelf[0].name, "x");
+            assert_eq!(inv.rows[0].mounts.len(), 1, "only Codex still mounts it");
+
+            let again = app.apply(&plan.id);
+            assert!(matches!(again, Err(CoreError::UnknownId { .. })), "a plan is used once");
+
+            let restore = app.plan(&ActionRequest::Restore { shelf: inv.shelf[0].id.clone() }).unwrap();
+            assert_eq!(app.apply(&restore.id).unwrap().outcome, ApplyOutcomeKind::Applied);
+            let inv = app.inventory();
+            assert!(inv.shelf.is_empty());
+            assert_eq!(inv.rows[0].mounts.len(), 2);
+        }
+
+        #[test]
+        fn a_plan_from_before_a_refresh_is_stale_and_nothing_runs() {
+            let h = Home::new();
+            h.skill(".claude/skills/r", "r");
+            let (app, os) = open(&h);
+            let skill = app.inventory().rows[0].id.clone();
+
+            let plan = app.plan(&ActionRequest::DeleteBody { skill }).unwrap();
+            app.refresh();
+            let report = app.apply(&plan.id).unwrap();
+            assert_eq!(report.outcome, ApplyOutcomeKind::Stale);
+            assert!(os.recycled.lock().unwrap().is_empty());
+            assert!(h.p(".claude/skills/r").exists());
+        }
+
+        #[test]
+        fn a_jstack_synced_link_is_refused_with_the_exclude_remedy() {
+            let h = Home::new();
+            h.skill("jstack/skills/x", "x");
+            h.junction(".claude/skills/x", "jstack/skills/x");
+            std::fs::write(h.p(".jstack-links.txt"), format!("{}\n", h.p(".claude/skills/x").display())).unwrap();
+            let (app, _) = open(&h);
+            let mount = mount_id(&app, &h.p(".claude/skills/x"));
+
+            let plan = app.plan(&ActionRequest::RemoveMount { mount }).unwrap();
+            assert!(!plan.ready);
+            assert_eq!(plan.blockers.len(), 1);
+            assert!(matches!(plan.blockers[0].kind, BlockerKind::RecreatedBy));
+            assert!(plan.blockers[0].remedy.contains("Add x to jstack/exclude.txt"), "{}", plan.blockers[0].remedy);
+            assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Refused);
+            assert!(h.p(".claude/skills/x").exists());
+        }
+
+        #[test]
+        fn bundle_disable_hands_the_runner_exactly_the_claude_command() {
+            let h = Home::new();
+            h.claude_plugin();
+            let (app, os) = open(&h);
+            let bundle = app.inventory().bundles[0].id.clone();
+
+            let plan = app.plan(&ActionRequest::BundleDisable { bundle }).unwrap();
+            assert_eq!(plan.steps[0].detail, "claude plugin disable pstack@cursor-plugins");
+            assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Applied);
+            assert_eq!(*os.ran.lock().unwrap(), vec!["claude plugin disable pstack@cursor-plugins"]);
+        }
+
+        #[test]
+        fn an_id_the_core_did_not_issue_is_rejected() {
+            let h = Home::new();
+            let (app, _) = open(&h);
+            assert!(matches!(app.plan(&ActionRequest::Disable { mount: r"C:\x".into() }), Err(CoreError::UnknownId { .. })));
+        }
     }
 
     #[test]
