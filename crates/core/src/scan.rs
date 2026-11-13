@@ -159,7 +159,7 @@ impl<'a> Builder<'a> {
             }
         }
 
-        let Some((scope, bundle)) = self.scope_of(&fact.scope, harness, bundle_ids) else {
+        let Some((scope, bundle)) = self.scope_of(&fact.scope, bundle_ids) else {
             self.issues.push(ScanIssue::Unreadable {
                 path: fact.entry,
                 error: "entry names a bundle its harness did not report".to_owned(),
@@ -189,7 +189,7 @@ impl<'a> Builder<'a> {
         );
     }
 
-    fn scope_of(&self, s: &ScopeFact, harness: HarnessId, bundle_ids: &HashMap<String, BundleId>) -> Option<(Scope, Option<BundleId>)> {
+    fn scope_of(&self, s: &ScopeFact, bundle_ids: &HashMap<String, BundleId>) -> Option<(Scope, Option<BundleId>)> {
         match s {
             ScopeFact::User => Some((Scope::User, None)),
             ScopeFact::Project(root) => Some((Scope::Project { root: root.clone() }, None)),

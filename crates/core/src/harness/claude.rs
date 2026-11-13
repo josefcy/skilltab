@@ -37,7 +37,7 @@ impl Harness for ClaudeCode {
 
         d.scan_skill_dir(&skills, ScopeFact::User, Ownership::Unmanaged, Naming::Plain, RANK_USER);
         discover_synced(&mut d, &skills.join("synced"));
-        discover_plugins(&mut d, &claude, projects);
+        discover_plugins(&mut d, &claude);
         for p in projects {
             let dir = p.path().join(".claude").join("skills");
             d.scan_skill_dir(&dir, ScopeFact::Project(p.clone()), Ownership::Unmanaged, Naming::Plain, RANK_PROJECT);
@@ -103,7 +103,7 @@ fn discover_synced(d: &mut Discovery, synced: &Path) {
     }
 }
 
-fn discover_plugins(d: &mut Discovery, claude: &Path, projects: &[ProjectRoot]) {
+fn discover_plugins(d: &mut Discovery, claude: &Path) {
     let path = claude.join("plugins").join("installed_plugins.json");
     let json = match fsutil::read_json(&path) {
         Ok(Some(j)) => j,

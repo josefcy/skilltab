@@ -5,15 +5,11 @@
 mod aliases;
 mod fsutil;
 mod manage;
-// Hooks for the usage and jstack units that nothing calls yet.
-#[allow(dead_code, unused_variables)]
 mod harness;
 mod jstack;
 mod model;
 mod projects;
-#[allow(dead_code)]
 mod provenance;
-#[allow(unused_variables)]
 mod scan;
 mod usage;
 pub mod view;

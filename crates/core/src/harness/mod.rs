@@ -57,7 +57,7 @@ pub trait Harness: Sync {
     }
 
     /// Project roots that live in the harness's own state, beyond transcript cwds.
-    fn known_projects(&self, env: &Env) -> Vec<PathBuf> {
+    fn known_projects(&self, _env: &Env) -> Vec<PathBuf> {
         Vec::new()
     }
 }
@@ -210,6 +210,8 @@ pub trait SessionParser {
 }
 
 /// For a harness whose usage log format is not known yet. The harness still shows up in the inventory.
+/// No shipped harness needs it today; it is the starting point for adding one.
+#[allow(dead_code)]
 pub struct NoUsage;
 impl SessionParser for NoUsage {
     fn feed(&mut self, _line: &[u8], _out: &mut Vec<RawEvent>) {}

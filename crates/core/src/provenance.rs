@@ -55,18 +55,6 @@ impl Provenance {
         p
     }
 
-    pub fn empty() -> Provenance {
-        Provenance {
-            lock: HashMap::new(),
-            jstack_links: HashSet::new(),
-            jstack_skills_dir: None,
-            synced: HashMap::new(),
-            agents_skills: String::new(),
-            claude_skills: String::new(),
-            issues: Vec::new(),
-        }
-    }
-
     pub fn issues(&self) -> &[ScanIssue] {
         &self.issues
     }
