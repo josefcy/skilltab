@@ -64,9 +64,20 @@ impl Harness for ClaudeCode {
         Box::new(ClaudeParser::new())
     }
 
+    /// Only user-scope installs: which `--scope` flag a project install needs is unverified, and
+    /// without it the CLI would flip the user-wide setting instead.
     fn bundle_command(&self, b: &BundleRef, op: BundleOp) -> Option<ExternalCommand> {
-        // `claude plugin {enable|disable|uninstall|update} <name>@<marketplace>`; project scope sets cwd.
-        unimplemented!()
+        if *b.install_scope != InstallScope::User {
+            return None;
+        }
+        let verb = match op {
+            BundleOp::Enable => "enable",
+            BundleOp::Disable => "disable",
+        };
+        Some(ExternalCommand {
+            program: "claude".to_owned(),
+            args: vec!["plugin".to_owned(), verb.to_owned(), format!("{}@{}", b.name, b.marketplace)],
+        })
     }
 }
 

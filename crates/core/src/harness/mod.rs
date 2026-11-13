@@ -52,7 +52,7 @@ pub trait Harness: Sync {
 
     /// The command line that performs a bundle operation through the harness's own tooling.
     /// None means this harness cannot do that operation, and the planner reports a blocker.
-    fn bundle_command(&self, bundle: &BundleRef, op: BundleOp) -> Option<ExternalCommand> {
+    fn bundle_command(&self, _bundle: &BundleRef, _op: BundleOp) -> Option<ExternalCommand> {
         None
     }
 
@@ -288,19 +288,24 @@ pub struct BundleRef<'a> {
     pub install_scope: &'a InstallScope,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BundleOp {
     Enable,
     Disable,
-    Uninstall,
-    Update,
 }
 
 /// A program and its arguments. Never a shell string, so values are never interpolated into a shell.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalCommand {
     pub program: String,
     pub args: Vec<String>,
-    pub cwd: Option<PathBuf>,
+}
+
+impl ExternalCommand {
+    /// The command as a user would type it, for the plan dialog.
+    pub fn display(&self) -> String {
+        std::iter::once(self.program.as_str()).chain(self.args.iter().map(String::as_str)).collect::<Vec<_>>().join(" ")
+    }
 }
 
 /// Manifests write paths like "./skills/". Dropping the `.` keeps one spelling per folder.

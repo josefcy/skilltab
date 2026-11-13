@@ -248,8 +248,18 @@ pub enum InstallScope {
 
 // ---------------------------------------------------------------- shelf (disabled and removed links)
 
+/// Minted by the planner from the entry and the revision, so re-planning the same action gives the same id.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ShelfId(String);
+
+impl ShelfId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub(crate) fn new(s: String) -> ShelfId {
+        ShelfId(s)
+    }
+}
 
 /// A mount that skilltab took away and can put back. Shelved items show up in the
 /// inventory as disabled rows, so "disabled" has one source of truth: the shelf.
@@ -257,6 +267,8 @@ pub struct ShelfId(String);
 pub struct ShelfEntry {
     pub id: ShelfId,
     pub harness: HarnessId,
+    /// The skill's manifest name when it was shelved, so the row can be shown without the folder.
+    pub name: String,
     pub entry: PathBuf,
     pub held: Held,
     pub reason: ShelfReason,

@@ -81,9 +81,6 @@ impl Harness for Codex {
         Box::new(CodexParser::new(resume))
     }
 
-    fn bundle_command(&self, b: &BundleRef, op: BundleOp) -> Option<ExternalCommand> {
-        None // no known CLI for toggling Codex plugins; the planner shows a blocker with "edit config.toml"
-    }
 }
 
 fn discover_plugins(d: &mut Discovery, codex: &Path) {
