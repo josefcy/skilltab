@@ -231,7 +231,10 @@ pub fn relate(body: &SkillBody, repo: &RepoState) -> Option<JstackRelation> {
     if let Origin::JstackRepo { skill } = &body.origin {
         return Some(JstackRelation::Owned { skill: skill.clone(), drift: owned_drift(repo, skill) });
     }
-    if let Some(own) = repo.skills.iter().find(|s| answers_to(body, &s.name)) {
+    // A plugin, claude.ai sync or harness built-in that merely shares a name is a clash, not a copy
+    // the user can bring back in line with the repo. Report it through `NotInstalled`'s `NameTaken`.
+    let foreign = matches!(body.origin, Origin::Plugin { .. } | Origin::ClaudeAiSync { .. } | Origin::HarnessBuiltin { .. });
+    if let Some(own) = repo.skills.iter().find(|s| !foreign && answers_to(body, &s.name)) {
         let drift = if body.content_hash == own.content_hash {
             Drift::InSync
         } else {
@@ -323,6 +326,75 @@ fn answers_to(body: &SkillBody, name: &str) -> bool {
 fn relation_name(r: &JstackRelation) -> &str {
     match r {
         JstackRelation::Owned { skill, .. } | JstackRelation::CopyOf { skill, .. } | JstackRelation::Declared { skill, .. } => skill,
+    }
+}
+
+// ---------------------------------------------------------------- commands
+
+/// What jstack's own tooling can do for the user. skilltab only describes the command line. The
+/// manage module shows it in a plan and runs it, and nothing in this module ever does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JstackAction {
+    /// Install or re-link: `sync-skills.ps1`. It links every own skill into every harness, the way
+    /// jstack decides, and it pulls the clone first.
+    Sync,
+    /// Update the clone only: `git pull --ff-only`. Owned skills change with it, since they are the clone's folders.
+    Pull,
+    /// One line of skill-sources.txt, as install-tools.ps1 runs it. The skills CLI updates a skill that is already installed.
+    InstallDeclared { source: String, skills: Vec<String> },
+}
+
+pub struct JstackCommand {
+    pub command: crate::harness::ExternalCommand,
+    /// True when running it moves the clone to a new commit. sync-skills.ps1 does this on every
+    /// run, even with -WhatIf, so a preview of it is not a preview of the working tree.
+    pub updates_clone: bool,
+}
+
+impl RepoState {
+    /// Pure. Whether sync-skills.ps1 exists in the clone is the planner's check, not this function's.
+    pub fn command(&self, action: &JstackAction) -> JstackCommand {
+        let root = self.root.clone();
+        let text = |s: &str| s.to_owned();
+        match action {
+            JstackAction::Sync => JstackCommand {
+                // The same line the session-start hooks use, plus -repo so a clone outside ~\jstack works.
+                command: crate::harness::ExternalCommand {
+                    program: text("powershell"),
+                    args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
+                        .map(text)
+                        .into_iter()
+                        .chain([root.join("sync-skills.ps1").to_string_lossy().into_owned(), text("-repo"), root.to_string_lossy().into_owned()])
+                        .collect(),
+                    cwd: Some(root),
+                },
+                updates_clone: true,
+            },
+            JstackAction::Pull => JstackCommand {
+                command: crate::harness::ExternalCommand {
+                    program: text("git"),
+                    args: ["pull", "--ff-only"].map(text).into(),
+                    cwd: Some(root),
+                },
+                updates_clone: true,
+            },
+            JstackAction::InstallDeclared { source, skills } => JstackCommand {
+                // install-tools.ps1: npx --yes skills add <source> -g -a claude-code codex -y --skill <skills...>
+                // `npx` is a .cmd shim on Windows, which CreateProcess only finds with its extension.
+                command: crate::harness::ExternalCommand {
+                    program: text("npx.cmd"),
+                    args: ["--yes", "skills", "add"]
+                        .map(text)
+                        .into_iter()
+                        .chain([source.clone()])
+                        .chain(["-g", "-a", "claude-code", "codex", "-y", "--skill"].map(text))
+                        .chain(skills.iter().cloned())
+                        .collect(),
+                    cwd: Some(root),
+                },
+                updates_clone: false,
+            },
+        }
     }
 }
 
@@ -674,5 +746,54 @@ mod relation_tests {
         let delta = rep.not_installed.iter().find(|n| n.skill == "delta" && n.harness == HarnessId::CLAUDE_CODE).unwrap();
         let Absence::NameTaken { by } = &delta.why else { panic!("{delta:?}") };
         assert_eq!(snap.bodies[by].manifest.name, "delta");
+        assert!(rep.relations.iter().all(|(id, _)| id != by), "a plugin skill is not a copy of the repo's");
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::tests::TempRepo;
+    use super::*;
+
+    fn state() -> (TempRepo, RepoState) {
+        let repo = TempRepo::new();
+        repo.skill("alpha", "one");
+        repo.commit_all("init");
+        let state = RepoState::load(&repo.root).unwrap();
+        (repo, state)
+    }
+
+    #[test]
+    fn sync_is_the_session_start_hook_line_aimed_at_this_clone_and_pulls_first() {
+        let (repo, state) = state();
+        let c = state.command(&JstackAction::Sync);
+        let script = repo.root.join("sync-skills.ps1").to_string_lossy().into_owned();
+        let root = repo.root.to_string_lossy().into_owned();
+        assert_eq!(c.command.program, "powershell");
+        assert_eq!(c.command.args, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &script, "-repo", &root]);
+        assert_eq!(c.command.cwd.as_deref(), Some(repo.root.as_path()));
+        assert!(c.updates_clone);
+    }
+
+    #[test]
+    fn update_is_a_fast_forward_only_pull_in_the_clone() {
+        let (repo, state) = state();
+        let c = state.command(&JstackAction::Pull);
+        assert_eq!((c.command.program.as_str(), c.command.args.as_slice()), ("git", ["pull".to_owned(), "--ff-only".to_owned()].as_slice()));
+        assert_eq!(c.command.cwd.as_deref(), Some(repo.root.as_path()));
+        assert!(c.updates_clone);
+    }
+
+    #[test]
+    fn declared_install_is_install_tools_line_with_each_skill_as_its_own_argument() {
+        let (_, state) = state();
+        let action = JstackAction::InstallDeclared { source: "owner/pack".into(), skills: vec!["one".into(), "two words".into()] };
+        let c = state.command(&action);
+        assert_eq!(c.command.program, "npx.cmd");
+        assert_eq!(
+            c.command.args,
+            ["--yes", "skills", "add", "owner/pack", "-g", "-a", "claude-code", "codex", "-y", "--skill", "one", "two words"]
+        );
+        assert!(!c.updates_clone);
     }
 }
