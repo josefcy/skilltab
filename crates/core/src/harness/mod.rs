@@ -195,6 +195,7 @@ impl Discovery {
 
 // ---------------------------------------------------------------- usage parsing
 
+#[derive(Debug, Clone)]
 pub struct UsageSource {
     pub path: PathBuf,
     /// Append-only logs can be resumed from a byte offset. Others are reparsed whenever they change.
@@ -217,9 +218,26 @@ impl SessionParser for NoUsage {
     }
 }
 
+/// Appends every `*.jsonl` file directly inside `dir`. A missing folder yields nothing.
+fn push_jsonl(out: &mut Vec<UsageSource>, dir: &Path) {
+    let Ok(read) = std::fs::read_dir(dir) else { return };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|t| t.is_file()) && path.extension().is_some_and(|e| e == "jsonl") {
+            out.push(UsageSource { path, append_only: true });
+        }
+    }
+}
+
+fn parse_ts(s: &str) -> Option<Timestamp> {
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|t| t.with_timezone(&chrono::Utc))
+}
+
 /// Opaque per-source parser state, stored next to the byte cursor.
+#[derive(Debug, Clone)]
 pub struct ParserState(pub String);
 
+#[derive(Debug, Clone)]
 pub struct RawEvent {
     pub key: InvocationKey,
     pub kind: InvocationKind,
@@ -231,7 +249,8 @@ pub struct RawEvent {
     pub dedup: String,
 }
 
-#[derive(Clone, Copy)]
+/// The discriminants are stored in `usage.db` and index `Tally::by_kind`, so they must not be reordered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum InvocationKind {
     /// The user typed /name (Claude `<command-name>`).
     Slash,
@@ -241,6 +260,24 @@ pub enum InvocationKind {
     Mention,
     /// The agent opened SKILL.md with a tool (Codex). This is the weakest signal, so the UI shows it apart.
     FileRead,
+}
+
+impl InvocationKind {
+    pub const ALL: [InvocationKind; 4] =
+        [InvocationKind::Slash, InvocationKind::Model, InvocationKind::Mention, InvocationKind::FileRead];
+
+    pub fn from_index(i: i64) -> Option<InvocationKind> {
+        usize::try_from(i).ok().and_then(|i| Self::ALL.get(i).copied())
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            InvocationKind::Slash => "slash",
+            InvocationKind::Model => "model",
+            InvocationKind::Mention => "mention",
+            InvocationKind::FileRead => "file-read",
+        }
+    }
 }
 
 // ---------------------------------------------------------------- bundle ops

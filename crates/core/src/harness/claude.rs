@@ -46,16 +46,22 @@ impl Harness for ClaudeCode {
     }
 
     fn usage_sources(&self, env: &Env) -> Vec<UsageSource> {
-        unimplemented!() // append_only: true
+        let mut out = Vec::new();
+        let Ok(slugs) = std::fs::read_dir(env.home.join(".claude").join("projects")) else { return out };
+        for slug in slugs.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+            push_jsonl(&mut out, &slug);
+            let Ok(sessions) = std::fs::read_dir(&slug) else { continue };
+            for session in sessions.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+                push_jsonl(&mut out, &session.join("subagents"));
+            }
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
     }
 
+    /// Stateless: every line carries its own cwd and session id, so `resume` is unused.
     fn session_parser(&self, _resume: Option<&ParserState>) -> Box<dyn SessionParser> {
-        // Stateless: every line carries its own cwd and session id.
-        // Prefilter: line contains b"\"name\":\"Skill\"" or b"<command-name>".
-        // Built-in slash commands (/clear, /model) are emitted as Slash events too. They never
-        // resolve to a body. The view drops unresolved Slash keys that have no ':' so they don't show as ghosts.
-        // dedup: tool_use id for Model, message uuid for Slash.
-        unimplemented!()
+        Box::new(ClaudeParser::new())
     }
 
     fn bundle_command(&self, b: &BundleRef, op: BundleOp) -> Option<ExternalCommand> {
@@ -171,6 +177,128 @@ fn enabled_plugins(d: &mut Discovery, files: &[PathBuf]) -> HashMap<String, bool
     out
 }
 
+/// Counts two line shapes and nothing else.
+///   Model: an `assistant` line whose message content holds `{"type":"tool_use","name":"Skill","input":{"skill":K}}`.
+///   Slash: a `user` line whose message content is text that starts with `<command-message>` or
+///          `<command-name>` and names `<command-name>/K</command-name>`.
+/// Every other line that mentions these markers is skipped on purpose: the tool catalogs in
+/// `api-request-*` and `attachment` lines list `"name":"Skill"` and `<command-name>` in their
+/// descriptions, and `api-request-blob` lines replay earlier messages. Built-in commands such as
+/// `/compact` are kept, since only the snapshot can tell whether a key is a skill.
+struct ClaudeParser {
+    skill_call: memchr::memmem::Finder<'static>,
+    command: memchr::memmem::Finder<'static>,
+    assistant: memchr::memmem::Finder<'static>,
+    user: memchr::memmem::Finder<'static>,
+}
+
+impl ClaudeParser {
+    fn new() -> ClaudeParser {
+        use memchr::memmem::Finder;
+        ClaudeParser {
+            skill_call: Finder::new(br#""name":"Skill""#),
+            command: Finder::new(b"<command-name>"),
+            assistant: Finder::new(br#""type":"assistant""#),
+            user: Finder::new(br#""type":"user""#),
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Record {
+    #[serde(rename = "type")]
+    ty: String,
+    uuid: Option<String>,
+    timestamp: Option<String>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+    cwd: Option<String>,
+    message: Option<Message>,
+}
+
+#[derive(serde::Deserialize)]
+struct Message {
+    content: Option<Content>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum Content {
+    Text(String),
+    Items(Vec<Item>),
+}
+
+#[derive(serde::Deserialize)]
+struct Item {
+    #[serde(rename = "type")]
+    ty: Option<String>,
+    id: Option<String>,
+    name: Option<String>,
+    input: Option<serde_json::Value>,
+    text: Option<String>,
+}
+
+impl SessionParser for ClaudeParser {
+    fn feed(&mut self, line: &[u8], out: &mut Vec<RawEvent>) {
+        let model = self.skill_call.find(line).is_some() && self.assistant.find(line).is_some();
+        let slash = self.command.find(line).is_some() && self.user.find(line).is_some();
+        if !model && !slash {
+            return;
+        }
+        let Ok(rec) = serde_json::from_slice::<Record>(line) else { return };
+        let Some(at) = rec.timestamp.as_deref().and_then(parse_ts) else { return };
+        let Some(content) = rec.message.and_then(|m| m.content) else { return };
+        let session = rec.session_id.unwrap_or_default();
+        let cwd = rec.cwd.map(PathBuf::from);
+        let mut emit = |key: String, kind: InvocationKind, dedup: String| {
+            out.push(RawEvent { key: InvocationKey::Name(key), kind, at, session: session.clone(), cwd: cwd.clone(), dedup });
+        };
+
+        match (rec.ty.as_str(), content) {
+            ("assistant", Content::Items(items)) if model => {
+                for item in items {
+                    if item.ty.as_deref() != Some("tool_use") || item.name.as_deref() != Some("Skill") {
+                        continue;
+                    }
+                    let key = item.input.as_ref().and_then(|i| i.get("skill")).and_then(|s| s.as_str());
+                    if let (Some(key), Some(id)) = (key.map(str::trim).filter(|k| !k.is_empty()), item.id) {
+                        emit(key.to_owned(), InvocationKind::Model, format!("tool:{id}"));
+                    }
+                }
+            }
+            ("user", content) if slash => {
+                let Some(uuid) = rec.uuid else { return };
+                let texts: Vec<String> = match content {
+                    Content::Text(t) => vec![t],
+                    Content::Items(items) => items.into_iter().filter_map(|i| i.text).collect(),
+                };
+                if let Some(name) = texts.iter().find_map(|t| slash_command(t)) {
+                    emit(name.to_owned(), InvocationKind::Slash, format!("msg:{uuid}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn checkpoint(&self) -> ParserState {
+        ParserState(String::new())
+    }
+}
+
+/// The command in `<command-message>x</command-message><command-name>/x</command-name>...`, without its slash.
+/// A message that only quotes the tag further along is not a command.
+fn slash_command(text: &str) -> Option<&str> {
+    let text = text.trim_start();
+    if !text.starts_with("<command-message>") && !text.starts_with("<command-name>") {
+        return None;
+    }
+    const OPEN: &str = "<command-name>";
+    let start = text.find(OPEN)? + OPEN.len();
+    let end = start + text[start..].find("</command-name>")?;
+    let name = text[start..end].trim().trim_start_matches('/');
+    (!name.is_empty()).then_some(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +306,92 @@ mod tests {
 
     fn env(home: &Path) -> Env {
         Env { home: home.to_path_buf(), projects: vec![], jstack_root: None }
+    }
+
+    fn feed(line: serde_json::Value) -> Vec<RawEvent> {
+        let mut out = Vec::new();
+        ClaudeParser::new().feed(line.to_string().as_bytes(), &mut out);
+        out
+    }
+
+    fn base(ty: &str, message: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"type": ty, "uuid": "u1", "sessionId": "s1", "cwd": "D:\\p",
+            "timestamp": "2026-11-01T10:00:00.000Z", "message": message})
+    }
+
+    #[test]
+    fn skill_tool_use_is_a_model_event_keyed_by_tool_use_id() {
+        let items = serde_json::json!([
+            {"type": "text", "text": "hi"},
+            {"type": "tool_use", "id": "toolu_1", "name": "Skill", "input": {"skill": "pstack:how", "args": "x"}},
+            {"type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {"command": "ls"}},
+        ]);
+        let events = feed(base("assistant", serde_json::json!({"role": "assistant", "content": items})));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].key, InvocationKey::Name("pstack:how".into()));
+        assert_eq!(events[0].kind, InvocationKind::Model);
+        assert_eq!(events[0].dedup, "tool:toolu_1");
+        assert_eq!(events[0].session, "s1");
+        assert_eq!(events[0].cwd, Some(PathBuf::from("D:\\p")));
+    }
+
+    #[test]
+    fn slash_command_is_a_slash_event_keyed_by_message_uuid() {
+        let text = "<command-message>implement</command-message>\n<command-name>/mattpocock-skills:implement</command-name>\n<command-args>x</command-args>";
+        let events = feed(base("user", serde_json::json!({"role": "user", "content": text})));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].key, InvocationKey::Name("mattpocock-skills:implement".into()));
+        assert_eq!(events[0].kind, InvocationKind::Slash);
+        assert_eq!(events[0].dedup, "msg:u1");
+
+        let builtin = "<command-name>/compact</command-name>\n<command-message>compact</command-message>";
+        let events = feed(base("user", serde_json::json!({"role": "user", "content": builtin})));
+        assert_eq!(events[0].key, InvocationKey::Name("compact".into()));
+    }
+
+    #[test]
+    fn tool_catalogs_replayed_requests_and_quotations_are_not_usage() {
+        let desc = "Run <command-name>/x</command-name> via the \"name\":\"Skill\" tool";
+        let catalog = serde_json::json!({"type": "attachment", "attachment": {"tools": [{"name": "Skill", "description": desc}]},
+            "timestamp": "2026-11-01T10:00:00.000Z", "uuid": "u2"});
+        assert!(feed(catalog).is_empty());
+
+        let shape = serde_json::json!({"type": "api-request-shape", "timestamp": "2026-11-01T10:00:00.000Z",
+            "shape": {"tools": [{"name": "Skill", "description": desc}]}});
+        assert!(feed(shape).is_empty());
+
+        let replay = serde_json::json!({"type": "api-request-blob", "timestamp": "2026-11-01T10:00:00.000Z", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_9", "name": "Skill", "input": {"skill": "x"}},
+            {"type": "text", "text": "<command-name>/y</command-name>"}]}});
+        assert!(feed(replay).is_empty());
+
+        let quoted = base("user", serde_json::json!({"role": "user", "content": "why does <command-name>/y</command-name> appear?"}));
+        assert!(feed(quoted).is_empty());
+
+        let tool_result = base("user", serde_json::json!({"role": "user", "content": [
+            {"type": "tool_result", "content": "<command-name>/y</command-name>"}]}));
+        assert!(feed(tool_result).is_empty());
+
+        let assistant_text = base("assistant", serde_json::json!({"content": [
+            {"type": "text", "text": "<command-name>/y</command-name> and \"name\":\"Skill\""}]}));
+        assert!(feed(assistant_text).is_empty());
+    }
+
+    #[test]
+    fn sources_cover_sessions_and_subagents_but_not_other_files() {
+        let t = tempfile::tempdir().unwrap();
+        let slug = t.path().join(".claude").join("projects").join("D--p");
+        let sub = slug.join("sess").join("subagents");
+        fs::create_dir_all(&sub).unwrap();
+        for f in [slug.join("a.jsonl"), sub.join("agent-1.jsonl"), sub.join("agent-1.meta.json"), slug.join("notes.txt")] {
+            fs::write(f, "").unwrap();
+        }
+        let names: Vec<String> = ClaudeCode
+            .usage_sources(&env(t.path()))
+            .iter()
+            .map(|s| s.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["a.jsonl", "agent-1.jsonl"]);
     }
 
     #[test]
