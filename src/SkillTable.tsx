@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { ShelfRow, SkillRow } from "./bindings";
 import type { Sort, SortKey } from "./filters";
 import { ago } from "./format";
-import { Empty, HarnessChip } from "./ui";
+import { Empty, HarnessChip, JstackBadge } from "./ui";
 
 type Props = {
   rows: SkillRow[];
@@ -22,6 +22,7 @@ const COLUMNS: { key: SortKey; label: string; hint?: string; className?: string 
   { key: "scopes", label: "Scope", className: "c-scope" },
   { key: "owner", label: "Owner", className: "c-owner" },
   { key: "origin", label: "Origin", className: "c-origin" },
+  { key: "jstack", label: "jstack", hint: "relation to your jstack repo", className: "c-jstack" },
   { key: "uses", label: "Uses", hint: "all time, last 30 days", className: "c-uses num" },
   { key: "lastUsed", label: "Last used", className: "c-last" },
 ];
@@ -113,6 +114,7 @@ export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort,
                   {r.origin.label}
                   {r.origin.detail && <span className="sub"> {r.origin.detail}</span>}
                 </td>
+                <td className="c-jstack">{r.jstack && <JstackBadge j={r.jstack} bare />}</td>
                 <td className="c-uses num">
                   <Uses r={r} />
                 </td>
@@ -139,6 +141,7 @@ export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort,
               <td className="c-scope" />
               <td className="c-owner">skilltab shelf</td>
               <td className="c-origin" />
+              <td className="c-jstack" />
               <td className="c-uses num" />
               <td className="c-last">{ago(s.at)}</td>
             </tr>

@@ -1,5 +1,5 @@
 import { createContext, useContext, type CSSProperties } from "react";
-import type { Facets, Tag } from "./bindings";
+import type { Facets, JstackRelationView, Tag } from "./bindings";
 
 /** Hue per harness, assigned by position in the facet list the backend sends, so a new harness gets a colour without a TS edit. */
 const HueContext = createContext<(id: string) => number>(() => 210);
@@ -34,4 +34,14 @@ export function Empty({ title, children }: { title: string; children?: React.Rea
 
 export function plural(n: number, one: string, many = one + "s"): string {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+/** How a skill relates to the jstack repo, with its drift when it has any. The full sentence is the tooltip. */
+export function JstackBadge({ j, bare }: { j: JstackRelationView; /** Drop the "jstack" word where the column already says it. */ bare?: boolean }) {
+  return (
+    <span className="jbadges" title={j.note}>
+      <span className="jbadge">{bare ? j.label : `jstack ${j.label}`}</span>
+      {j.driftLabel && <span className="state warn">{j.driftLabel}</span>}
+    </span>
+  );
 }
