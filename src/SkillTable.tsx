@@ -1,11 +1,14 @@
 import { useEffect, useRef } from "react";
-import type { SkillRow } from "./bindings";
+import type { ShelfRow, SkillRow } from "./bindings";
 import type { Sort, SortKey } from "./filters";
 import { ago } from "./format";
 import { Empty, HarnessChip } from "./ui";
 
 type Props = {
   rows: SkillRow[];
+  /** Disabled rows, shown after the installed ones. */
+  shelved: ShelfRow[];
+  onRestore: (shelfId: string) => void;
   selected: string | null;
   onSelect: (id: string) => void;
   sort: Sort;
@@ -38,14 +41,14 @@ function Last({ r }: { r: SkillRow }) {
   return r.usage.lastUsed ? <>{ago(r.usage.lastUsed)}</> : <span className="sub">never</span>;
 }
 
-export function SkillTable({ rows, selected, onSelect, sort, onSort }: Props) {
+export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort, onSort }: Props) {
   const selectedRef = useRef<HTMLTableRowElement | null>(null);
 
   useEffect(() => {
     selectedRef.current?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && shelved.length === 0) {
     return (
       <Empty title="No skills match these filters">Clear a filter or change the search to see more.</Empty>
     );
@@ -119,6 +122,27 @@ export function SkillTable({ rows, selected, onSelect, sort, onSort }: Props) {
               </tr>
             );
           })}
+          {shelved.map((s) => (
+            <tr key={s.id} className="shelved" title={s.note}>
+              <td className="c-name">
+                <span className="name">{s.name}</span>
+              </td>
+              <td className="c-desc">
+                <span className="state warn">{s.reason}</span>
+                <button type="button" className="rowaction" onClick={() => onRestore(s.id)}>
+                  Restore…
+                </button>
+              </td>
+              <td className="c-harness">
+                <HarnessChip tag={s.harness} />
+              </td>
+              <td className="c-scope" />
+              <td className="c-owner">skilltab shelf</td>
+              <td className="c-origin" />
+              <td className="c-uses num" />
+              <td className="c-last">{ago(s.at)}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>

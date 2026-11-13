@@ -1,7 +1,54 @@
-import type { BundleRow, Problems } from "./bindings";
+import type { ActionRequest, BundleRow, Problems, ShelfRow } from "./bindings";
+import { ago } from "./format";
 import { Empty, HarnessChip, plural } from "./ui";
 
-export function BundlesPanel({ bundles, onPick }: { bundles: BundleRow[]; onPick: (id: string) => void }) {
+type Manage = (request: ActionRequest) => void;
+
+export function ShelfPanel({ shelf, onManage }: { shelf: ShelfRow[]; onManage: Manage }) {
+  if (shelf.length === 0) {
+    return <Empty title="The shelf is empty">Skills you disable, and links you remove, wait here until you restore them.</Empty>;
+  }
+  return (
+    <div className="table-wrap">
+      <table className="grid">
+        <thead>
+          <tr>
+            <th className="static">Skill</th>
+            <th className="static">Harness</th>
+            <th className="static">Entry</th>
+            <th className="static">State</th>
+            <th className="static">Since</th>
+            <th className="static" />
+          </tr>
+        </thead>
+        <tbody>
+          {shelf.map((s) => (
+            <tr key={s.id} className="shelved" title={s.note}>
+              <td>
+                <span className="name">{s.name}</span>
+              </td>
+              <td>
+                <HarnessChip tag={s.harness} />
+              </td>
+              <td className="mono">{s.entry}</td>
+              <td>
+                <span className="state warn">{s.reason}</span>
+              </td>
+              <td>{ago(s.at)}</td>
+              <td>
+                <button type="button" className="rowaction" onClick={() => onManage({ kind: "restore", shelf: s.id })}>
+                  Restore…
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function BundlesPanel({ bundles, onPick, onManage }: { bundles: BundleRow[]; onPick: (id: string) => void; onManage: Manage }) {
   if (bundles.length === 0) {
     return <Empty title="No plugin bundles installed">Skills that ship inside a harness plugin are grouped here.</Empty>;
   }
@@ -16,6 +63,7 @@ export function BundlesPanel({ bundles, onPick }: { bundles: BundleRow[]; onPick
             <th className="static">Enabled</th>
             <th className="static num">Skills</th>
             <th className="static">Installed for</th>
+            <th className="static" />
           </tr>
         </thead>
         <tbody>
@@ -33,6 +81,18 @@ export function BundlesPanel({ bundles, onPick }: { bundles: BundleRow[]; onPick
               <td className="num">{b.memberCount}</td>
               <td>
                 <span className={`scope scope-${b.scope.kind}`}>{b.scope.label}</span>
+              </td>
+              <td>
+                <button
+                  type="button"
+                  className="rowaction"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onManage(b.enabled ? { kind: "bundleDisable", bundle: b.id } : { kind: "bundleEnable", bundle: b.id });
+                  }}
+                >
+                  {b.enabled ? "Disable…" : "Enable…"}
+                </button>
               </td>
             </tr>
           ))}

@@ -1080,7 +1080,7 @@ impl Cx<'_> {
             Blocker::RecreatedBy { owner: Ownership::ClaudeAiSync, .. } => (
                 BlockerKind::RecreatedBy,
                 "claude.ai sync writes this skill back on its next sync.".to_owned(),
-                "Remove the skill from your claude.ai account instead.".to_owned(),
+                "Remove the skill from your claude.ai account.".to_owned(),
             ),
             Blocker::RecreatedBy { owner, .. } => (
                 BlockerKind::RecreatedBy,
@@ -1090,7 +1090,7 @@ impl Cx<'_> {
             Blocker::PartOfBundle { bundle } => (
                 BlockerKind::PartOfBundle,
                 format!("This skill ships inside plugin {}, and its plugin manager owns the folder.", self.bundle_name(bundle)),
-                "Turn the whole plugin off with Disable plugin instead.".to_owned(),
+                "Turn the whole plugin off with Disable plugin.".to_owned(),
             ),
             Blocker::SharedBody { dependents } => {
                 let who: Vec<String> = dependents
@@ -1109,7 +1109,7 @@ impl Cx<'_> {
             Blocker::InsideJstackRepo => (
                 BlockerKind::InsideJstackRepo,
                 "This folder is your own source in the jstack clone.".to_owned(),
-                "Remove the links that point at it instead, or delete it in the jstack repo with git.".to_owned(),
+                "Remove the links that point at it, or delete it in the jstack repo with git.".to_owned(),
             ),
             Blocker::HarnessBuiltin { harness } => {
                 let label = self.tag(*harness).label;
