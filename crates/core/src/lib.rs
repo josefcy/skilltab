@@ -3,6 +3,7 @@
 //! `Skilltab` is the facade. Callers see `view` types only, so the model can change without touching the shell.
 
 // These modules carry hooks for the usage and manage units (parsers, bundle commands, plan re-checks) that nothing calls yet.
+mod aliases;
 mod fsutil;
 #[allow(dead_code, unused_variables)]
 mod harness;
@@ -20,7 +21,7 @@ pub mod view;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use view::{CoreError, Inventory, RefreshReport, SkillDetail, Tallies};
+use view::{AliasSuggestionView, CoreError, Inventory, RefreshReport, SkillDetail, Tallies};
 
 pub use projects::discover_projects;
 
@@ -30,6 +31,7 @@ pub use model::{
     MountState, Origin, Ownership, Scope, ScanIssue, SkillBody, SkillId, Snapshot,
 };
 pub use model::{HarnessId, HarnessInfo, LinkPath, ProjectRoot, RealDir, Tally, TrackingSince};
+pub use aliases::{apply as apply_aliases, key_from_wire, key_to_wire, suggest as suggest_aliases, Alias, AliasStore, RuleId, Suggestion};
 pub use harness::InvocationKind;
 pub use jstack::{fetch as jstack_fetch, report as jstack_report, Absence, DeclaredMissing, DeclaredSource, Drift, JstackAction, JstackCommand, JstackError, JstackReport, JstackRelation, NotInstalled, RepoSkill, RepoState, Upstream};
 pub use usage::{IngestProgress, IngestReport, UsageError, UsageIndex, UsagePoint};
@@ -58,7 +60,9 @@ struct Current {
 
 #[derive(Default)]
 struct Usage {
+    /// Confirmed aliases already folded in.
     tallies: Tallies,
+    aliases: AliasStore,
     tracking_since: model::TrackingSince,
 }
 
@@ -84,7 +88,41 @@ impl Skilltab {
     /// Every row, bundle, problem and facet. Filtering is client-side.
     pub fn inventory(&self) -> Inventory {
         let c = self.read();
-        view::inventory(&c.snapshot, &c.usage.tallies, &c.usage.tracking_since, c.scan_ms)
+        let mut inventory = view::inventory(&c.snapshot, &c.usage.tallies, &c.usage.tracking_since, c.scan_ms);
+        inventory.aliases = view::alias_views(&c.snapshot, &c.usage.aliases);
+        inventory
+    }
+
+    /// Ghost usage keys that match exactly one installed skill once the old spelling is dropped.
+    /// Nothing is linked until `confirm_alias`.
+    pub fn alias_suggestions(&self) -> Vec<AliasSuggestionView> {
+        let c = self.read();
+        view::alias_suggestion_views(&c.snapshot, &aliases::suggest(&c.snapshot, &c.usage.tallies, &c.usage.aliases))
+    }
+
+    /// Counts usage under `from` for the installed skill that answers to `to`, then rescans so the
+    /// totals and the revision move. Keys are the wire strings from `alias_suggestions`.
+    pub fn confirm_alias(&self, harness: &str, from: &str, to: &str) -> Result<RefreshReport, CoreError> {
+        let (harness, from, to) = parse_alias_ids(harness, from, to)?;
+        let snap = self.read().snapshot;
+        if snap.resolve(harness, &from).is_some() {
+            return Err(CoreError::Invalid { message: "that key still names an installed skill".to_owned() });
+        }
+        if snap.resolve(harness, &to).is_none() {
+            return Err(CoreError::Invalid { message: "no installed skill answers to the target".to_owned() });
+        }
+        self.edit_aliases(|store| store.add(Alias { harness, from, to }))
+    }
+
+    /// Undoes a confirmed alias, so the old key reads as a ghost again.
+    pub fn remove_alias(&self, harness: &str, from: &str) -> Result<RefreshReport, CoreError> {
+        let (harness, from, _) = parse_alias_ids(harness, from, from)?;
+        self.edit_aliases(|store| store.remove(harness, &from))
+    }
+
+    fn edit_aliases(&self, change: impl FnOnce(&mut AliasStore) -> bool) -> Result<RefreshReport, CoreError> {
+        AliasStore::edit(&self.data_dir.join(ALIASES_FILE), change).map_err(|e| CoreError::Io { message: e.to_string() })?;
+        Ok(self.refresh())
     }
 
     pub fn skill(&self, id: &str) -> Result<SkillDetail, CoreError> {
@@ -118,6 +156,17 @@ impl Skilltab {
     }
 }
 
+const ALIASES_FILE: &str = "aliases.json";
+
+fn parse_alias_ids(harness: &str, from: &str, to: &str) -> Result<(model::HarnessId, model::InvocationKey, model::InvocationKey), CoreError> {
+    let unknown = |id: &str| CoreError::UnknownId { id: id.to_owned() };
+    Ok((
+        model::HarnessId::parse(harness).ok_or_else(|| unknown(harness))?,
+        aliases::key_from_wire(from).ok_or_else(|| unknown(from))?,
+        aliases::key_from_wire(to).ok_or_else(|| unknown(to))?,
+    ))
+}
+
 fn build(env: &Env, data_dir: &Path, revision: u64) -> Current {
     let started = Instant::now();
     let snapshot = scan_disk(env, revision);
@@ -145,7 +194,11 @@ fn load_usage(env: &Env, data_dir: &Path) -> Usage {
     let read = || -> usage::Result<Usage> {
         let mut index = UsageIndex::open(&data_dir.join("usage.db"))?;
         index.ingest_all(env, &mut |_| {})?;
-        Ok(Usage { tallies: index.totals(chrono::Utc::now())?, tracking_since: index.tracking_since()? })
+        let aliases = AliasStore::load(&data_dir.join(ALIASES_FILE)).unwrap_or_else(|e| {
+            eprintln!("skilltab: aliases not applied: {e}");
+            AliasStore::default()
+        });
+        Ok(Usage { tallies: aliases::apply(index.totals(chrono::Utc::now())?, &aliases), aliases, tracking_since: index.tracking_since()? })
     };
     read().unwrap_or_else(|e| {
         eprintln!("skilltab: usage index unavailable: {e}");
@@ -244,6 +297,52 @@ mod tests {
         assert_eq!(chain[0].kind, view::HopKind::Folder);
         assert!(matches!(app.skill("nope"), Err(CoreError::UnknownId { .. })));
         assert!(matches!(app.reveal(&d.mounts[0].summary.id, 5), Err(CoreError::UnknownId { .. })));
+    }
+
+    #[test]
+    fn confirming_an_alias_moves_the_ghost_history_onto_the_skill_and_removing_it_moves_it_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        skill(tmp.path(), ".claude/skills/tdd", "tdd");
+        let projects = tmp.path().join(".claude/projects/p");
+        fs::create_dir_all(&projects).unwrap();
+        let slash = |uuid: &str, name: &str| {
+            serde_json::json!({"type": "user", "uuid": uuid, "sessionId": "s", "cwd": "D:\\p", "timestamp": "2026-11-01T10:00:00.000Z",
+                "message": {"content": format!("<command-name>/{name}</command-name>")}})
+            .to_string()
+        };
+        let lines = [slash("u1", "mattpocock-skills:tdd"), slash("u2", "mattpocock-skills:tdd"), slash("u3", "compact"), slash("u4", "tdd")];
+        fs::write(projects.join("a.jsonl"), lines.join("\n") + "\n").unwrap();
+
+        let app = open(tmp.path());
+        let total = |app: &Skilltab| app.inventory().rows[0].usage.total;
+        assert_eq!(total(&app), 1);
+        let suggestions = app.alias_suggestions();
+        assert_eq!(suggestions.len(), 1, "compact is a built-in and gets none");
+        let s = &suggestions[0];
+        assert_eq!((s.from.as_str(), s.to.as_str(), s.events), ("name:mattpocock-skills:tdd", "name:tdd", 2));
+        assert!(app.inventory().aliases.is_empty(), "suggesting links nothing");
+
+        assert!(matches!(app.confirm_alias("claude-code", "name:tdd", "name:tdd"), Err(CoreError::Invalid { .. })), "a live key is not a ghost");
+        assert!(matches!(app.confirm_alias("claude-code", &s.from, "name:nothing"), Err(CoreError::Invalid { .. })));
+        assert!(matches!(app.confirm_alias("claude-code", "bogus", &s.to), Err(CoreError::UnknownId { .. })));
+        assert!(matches!(app.confirm_alias("nope", &s.from, &s.to), Err(CoreError::UnknownId { .. })));
+        assert_eq!(total(&app), 1);
+
+        let before = app.inventory().revision;
+        assert_eq!(app.confirm_alias("claude-code", &s.from, &s.to).unwrap().revision, before + 1);
+        assert_eq!(total(&app), 3);
+        assert!(app.alias_suggestions().is_empty());
+        let inv = app.inventory();
+        assert_eq!(inv.aliases.len(), 1);
+        assert_eq!(inv.aliases[0].target_body.as_deref(), Some(inv.rows[0].id.as_str()));
+        assert!(tmp.path().join("data/aliases.json").exists());
+
+        assert_eq!(total(&open(tmp.path())), 3, "the confirmation survives a restart");
+
+        app.remove_alias("claude-code", &s.from).unwrap();
+        assert_eq!(total(&app), 1);
+        assert_eq!(app.alias_suggestions().len(), 1);
+        assert!(app.inventory().aliases.is_empty());
     }
 
     #[test]
