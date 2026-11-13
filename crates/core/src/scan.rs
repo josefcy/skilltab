@@ -13,7 +13,7 @@ use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-pub(crate) use hash::content_hash;
+pub(crate) use hash::{content_hash, content_hash_of};
 pub(crate) use resolve::still_link_to;
 
 /// Full rescan. About 300 entries and their SKILL.md files: it runs in milliseconds, so there is no inventory cache.

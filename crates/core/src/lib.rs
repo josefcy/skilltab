@@ -8,6 +8,7 @@
 
 mod fsutil;
 mod harness;
+mod jstack;
 mod model;
 mod provenance;
 mod scan;
