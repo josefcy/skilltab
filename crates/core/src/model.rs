@@ -402,3 +402,16 @@ mod tests {
         assert_eq!(norm_key(Path::new(r"C:\")), "c:\\");
     }
 }
+
+/// Usage of one (harness, key) pair, aggregated by `usage` and joined to mounts by `view`.
+/// `by_kind` is indexed by `harness::InvocationKind as usize`.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct Tally {
+    pub total: u32,
+    pub last_30d: u32,
+    pub last_used: Option<Timestamp>,
+    pub by_kind: [u32; 4],
+}
+
+/// Earliest transcript time skilltab has for a harness. "Unused" is only claimed after this.
+pub type TrackingSince = std::collections::HashMap<HarnessId, Timestamp>;
