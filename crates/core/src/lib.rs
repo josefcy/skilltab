@@ -11,6 +11,7 @@ mod harness;
 mod model;
 mod provenance;
 mod scan;
+mod usage;
 
 use std::path::PathBuf;
 
@@ -19,7 +20,9 @@ pub use model::{
     Bundle, BundleId, ContentHash, InstallScope, InvocationKey, Manifest, ManifestIssue, Mount, MountId,
     MountState, Origin, Ownership, Scope, ScanIssue, SkillBody, SkillId, Snapshot,
 };
-pub use model::{HarnessId, HarnessInfo, LinkPath, ProjectRoot, RealDir};
+pub use model::{HarnessId, HarnessInfo, LinkPath, ProjectRoot, RealDir, Tally, TrackingSince};
+pub use harness::InvocationKind;
+pub use usage::{IngestProgress, IngestReport, UsageError, UsageIndex, UsagePoint};
 
 pub struct Env {
     pub home: PathBuf,
