@@ -121,7 +121,7 @@ fn build(env: &Env, data_dir: &Path, revision: u64) -> Current {
     let projects = scan::project_roots(&project_candidates(env));
     let provenance = provenance::Provenance::load(env, env.jstack_root.as_deref());
     let snapshot = scan::scan(env, harness::registry(), &projects, &provenance, Vec::new(), revision);
-    let usage = load_usage(data_dir, &snapshot);
+    let usage = load_usage(env, data_dir);
     Current { snapshot: Arc::new(snapshot), usage: Arc::new(usage), scan_ms: started.elapsed().as_millis() as u32 }
 }
 
@@ -132,10 +132,18 @@ fn project_candidates(env: &Env) -> Vec<PathBuf> {
     all
 }
 
-/// Where the usage index plugs in: return its per-key tallies and each harness's tracking start date.
-/// Empty means every usage column reads "no data yet".
-fn load_usage(_data_dir: &Path, _snapshot: &Snapshot) -> Usage {
-    Usage::default()
+/// Brings the usage index up to date with the transcripts, then reads its tallies.
+/// A failure leaves usage empty, so the columns read "no data yet" rather than a wrong zero.
+fn load_usage(env: &Env, data_dir: &Path) -> Usage {
+    let read = || -> usage::Result<Usage> {
+        let mut index = UsageIndex::open(&data_dir.join("usage.db"))?;
+        index.ingest_all(env, &mut |_| {})?;
+        Ok(Usage { tallies: index.totals(chrono::Utc::now())?, tracking_since: index.tracking_since()? })
+    };
+    read().unwrap_or_else(|e| {
+        eprintln!("skilltab: usage index unavailable: {e}");
+        Usage::default()
+    })
 }
 
 #[cfg(windows)]
