@@ -3,6 +3,7 @@
 //! `Skilltab` is the facade. Callers see `view` types only, so the model can change without touching the shell.
 
 // These modules carry hooks for the usage and manage units (parsers, bundle commands, plan re-checks) that nothing calls yet.
+mod aliases;
 mod fsutil;
 #[allow(dead_code, unused_variables)]
 mod harness;
@@ -30,6 +31,7 @@ pub use model::{
     MountState, Origin, Ownership, Scope, ScanIssue, SkillBody, SkillId, Snapshot,
 };
 pub use model::{HarnessId, HarnessInfo, LinkPath, ProjectRoot, RealDir, Tally, TrackingSince};
+pub use aliases::{apply as apply_aliases, key_from_wire, key_to_wire, suggest as suggest_aliases, Alias, AliasStore, RuleId, Suggestion};
 pub use harness::InvocationKind;
 pub use jstack::{fetch as jstack_fetch, report as jstack_report, Absence, DeclaredMissing, DeclaredSource, Drift, JstackAction, JstackCommand, JstackError, JstackReport, JstackRelation, NotInstalled, RepoSkill, RepoState, Upstream};
 pub use usage::{IngestProgress, IngestReport, UsageError, UsageIndex, UsagePoint};
