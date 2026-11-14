@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { commands, type ActionRequest, type ApplyReport, type CoreError, type PlanView } from "./bindings";
+import { commands, type ActionRequest, type ApplyReport, type CoreError, type NoteKind, type PlanView } from "./bindings";
 import { HarnessChip } from "./ui";
 
 type Phase =
@@ -77,7 +77,7 @@ export function ActionDialog({ request, onClose, onApplied }: { request: ActionR
         {phase.kind === "error" && <p className="error">{phase.message}</p>}
 
         {shown && phase.kind !== "done" && <PlanBody plan={shown} />}
-        {phase.kind === "done" && <ReportBody report={phase.report} />}
+        {phase.kind === "done" && <ReportBody report={phase.report} plan={phase.plan} />}
 
         <footer>
           {phase.kind === "done" || phase.kind === "error" ? (
@@ -107,7 +107,26 @@ export function ActionDialog({ request, onClose, onApplied }: { request: ActionR
   );
 }
 
+function notesOf(plan: PlanView, kind: NoteKind): string[] {
+  return plan.notes.filter((n) => n.kind === kind).map((n) => n.text);
+}
+
+function NoteList({ title, texts }: { title: string; texts: string[] }) {
+  if (texts.length === 0) return null;
+  return (
+    <section className="notes">
+      <h3>{title}</h3>
+      <ul>
+        {texts.map((t, i) => (
+          <li key={i}>{t}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function PlanBody({ plan }: { plan: PlanView }) {
+  const present = notesOf(plan, "present");
   return (
     <div className="dialog-body">
       {plan.blockers.length > 0 && (
@@ -142,6 +161,8 @@ function PlanBody({ plan }: { plan: PlanView }) {
 
       {plan.steps.length === 0 && plan.blockers.length === 0 && plan.skipped.length === 0 && <p className="sub">Nothing to change. It is already in that state.</p>}
 
+      <NoteList title="Needs your attention" texts={notesOf(plan, "attention")} />
+
       {plan.steps.length > 0 && (
         <section>
           <h3>{plan.blockers.length > 0 ? "Would do" : "Will do"}</h3>
@@ -169,11 +190,24 @@ function PlanBody({ plan }: { plan: PlanView }) {
           </ul>
         </section>
       )}
+
+      {present.length > 0 && (
+        <details className="notes">
+          <summary>Already present ({present.length})</summary>
+          <ul>
+            {present.map((t, i) => (
+              <li key={i}>{t}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <NoteList title="After this" texts={notesOf(plan, "manual")} />
     </div>
   );
 }
 
-function ReportBody({ report }: { report: ApplyReport }) {
+function ReportBody({ report, plan }: { report: ApplyReport; plan: PlanView }) {
   const headline =
     report.outcome === "applied" ? "Done." : report.outcome === "failed" ? "A step failed. The steps after it did not run." : "Refused. Nothing ran.";
   return (
@@ -195,6 +229,8 @@ function ReportBody({ report }: { report: ApplyReport }) {
           {o}
         </pre>
       ))}
+      <NoteList title="Needs your attention" texts={notesOf(plan, "attention")} />
+      <NoteList title="After this" texts={notesOf(plan, "manual")} />
     </div>
   );
 }

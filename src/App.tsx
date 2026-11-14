@@ -4,6 +4,7 @@ import type { ActionRequest } from "./bindings";
 import { Detail } from "./Detail";
 import { BrokenPanel, BundlesPanel, ConflictsPanel, ShelfPanel } from "./Panels";
 import { BulkBar } from "./BulkBar";
+import { SetupPanel } from "./SetupPanel";
 import { SkillTable } from "./SkillTable";
 import { Toolbar } from "./Toolbar";
 import { UsagePanel } from "./UsagePanel";
@@ -19,7 +20,7 @@ function isTextField(target: EventTarget | null): boolean {
   return target.tagName === "SELECT" || target.tagName === "TEXTAREA";
 }
 
-type Tab = "skills" | "usage" | "shelf" | "bundles" | "conflicts" | "broken";
+type Tab = "skills" | "usage" | "shelf" | "bundles" | "conflicts" | "broken" | "setup";
 
 export default function App() {
   const { inventory: inv, error, firstLoadMs, refresh, refreshing } = useInventory();
@@ -103,7 +104,7 @@ export default function App() {
         searchRef.current?.focus();
         searchRef.current?.select();
       } else if (e.key === "Escape") {
-        if (typing && filters.text) setFilters((f) => ({ ...f, text: "" }));
+        if (typing && filters.text && tab === "skills") setFilters((f) => ({ ...f, text: "" }));
         else {
           if (e.target instanceof HTMLElement) e.target.blur();
           if (!typing && tab === "skills") clearChecked();
@@ -125,13 +126,14 @@ export default function App() {
   }
 
   const stillThere = selected && inv.rows.some((r) => r.id === selected) ? selected : null;
-  const tabs: { id: Tab; label: string; n: number }[] = [
+  const tabs: { id: Tab; label: string; n: number | null }[] = [
     { id: "skills", label: "Skills", n: inv.rows.length },
     { id: "usage", label: "Usage history", n: suggestions?.length ?? 0 },
     { id: "shelf", label: "Shelf", n: inv.shelf.length },
     { id: "bundles", label: "Bundles", n: inv.bundles.length },
     { id: "conflicts", label: "Name conflicts", n: inv.problems.nameConflicts.length },
     { id: "broken", label: "Broken links", n: inv.problems.brokenLinks.length + inv.problems.other.length },
+    { id: "setup", label: "Setup", n: null },
   ];
 
   return (
@@ -144,11 +146,11 @@ export default function App() {
               type="button"
               role="tab"
               aria-selected={tab === t.id}
-              className={t.n > 0 && (t.id === "broken" || t.id === "conflicts") ? "attn" : undefined}
+              className={t.n !== null && t.n > 0 && (t.id === "broken" || t.id === "conflicts") ? "attn" : undefined}
               onClick={() => setTab(t.id)}
             >
               {t.label}
-              <span className="count">{t.n}</span>
+              {t.n !== null && <span className="count">{t.n}</span>}
             </button>
           ))}
           <span className="spacer" />
@@ -199,6 +201,7 @@ export default function App() {
         {action && <ActionDialog request={action} onClose={closeAction} onApplied={action.kind === "deleteBodies" ? clearChecked : undefined} />}
         {tab === "conflicts" && <ConflictsPanel problems={inv.problems} onPick={showSkill} />}
         {tab === "broken" && <BrokenPanel problems={inv.problems} />}
+        {tab === "setup" && <SetupPanel onManage={setAction} />}
 
         <footer className="status">
           <span>

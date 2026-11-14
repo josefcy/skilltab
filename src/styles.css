@@ -758,6 +758,41 @@ tr.shelved .name {
   border-radius: 4px;
   background: var(--raised);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.blocker p,
+.steps li > span,
+.dialog .error {
+  overflow-wrap: anywhere;
+}
+
+.notes ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.notes li {
+  overflow-wrap: anywhere;
+}
+
+details.notes {
+  margin-top: 14px;
+}
+
+details.notes summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+details.notes ul {
+  margin-top: 6px;
 }
 
 .dialog footer {
@@ -1248,4 +1283,34 @@ table.usage {
 
 .panel-list {
   grid-template-columns: minmax(0, 1fr);
+}
+
+/* setup tab */
+.setup {
+  max-width: 720px;
+}
+
+.setup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.setup-folder {
+  flex: 1 1 auto;
+  max-width: none;
+}
+
+.setup-notes {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+.setup-notes b {
+  color: var(--ink);
+  font-weight: 600;
 }
