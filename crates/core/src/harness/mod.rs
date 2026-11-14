@@ -6,10 +6,10 @@
 
 use crate::fsutil;
 use crate::model::{
-    norm_key, HarnessId, InstallScope, InvocationKey, Ownership, ProjectRoot, Timestamp,
+    norm_key, Arg, HarnessId, InstallScope, InvocationKey, MarketplaceSource, Ownership, ProjectRoot, SetupManifest, Timestamp,
 };
 use crate::Env;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 impl HarnessId {
@@ -59,6 +59,112 @@ pub trait Harness: Sync {
     /// Project roots that live in the harness's own state, beyond transcript cwds.
     fn known_projects(&self, _env: &Env) -> Vec<PathBuf> {
         Vec::new()
+    }
+
+    /// What this harness contributes to a portable setup. The default carries nothing.
+    fn setup(&self) -> HarnessSetup {
+        HarnessSetup::default()
+    }
+
+    /// The harness's own plugin records. Err says which file could not be read, so Export can refuse
+    /// instead of writing a manifest from half a machine.
+    fn read_plugins(&self, _env: &Env) -> Result<PluginRecord, String> {
+        Ok(PluginRecord::default())
+    }
+
+    /// For each marketplace and plugin the manifest wants, whether this harness has it or which command adds it.
+    /// Marketplaces come before plugins. The default has none, so a harness without plugins plans nothing.
+    fn plugin_ops(&self, _want: &SetupManifest, _have: &PluginRecord) -> Vec<PluginOp> {
+        Vec::new()
+    }
+}
+
+// ---------------------------------------------------------------- setup
+
+/// Static facts about one harness's part in a setup backup. Plain data, so a test can check the whole registry.
+#[derive(Default)]
+pub struct HarnessSetup {
+    /// The harness's own folder under the home folder, such as ".claude". Its backup folder is the same name
+    /// without the dot.
+    pub config_home: &'static str,
+    /// The allowlist. Nothing outside it is ever exported or restored. This is the only copy of the list.
+    pub carry: &'static [Carry],
+    /// Home-relative folder this harness loads user skills from, where an own skill is linked.
+    pub skills_dir: Option<&'static str>,
+    /// The `-a` value of the skills CLI.
+    pub skills_cli_agent: Option<&'static str>,
+    /// Programs a restore may run for this harness.
+    pub tools: &'static [&'static str],
+    /// One sentence for the step Restore cannot do for the user.
+    pub sign_in: Option<&'static str>,
+    /// Where to get `tools`, as a sentence, for the blocker a missing one raises.
+    pub install_hint: Option<&'static str>,
+}
+
+/// A file or a folder of files, relative to `HarnessSetup::config_home`. Markdown only, because the
+/// files that hold tokens and machine state (`settings.json`, `config.toml`, `hooks.json`, auth) are not markdown.
+pub enum Carry {
+    File(&'static str),
+    /// Every file directly in `dir` whose extension is `ext`.
+    Dir { dir: &'static str, ext: &'static str },
+}
+
+/// What one harness knows about plugins on this machine.
+#[derive(Debug, Default)]
+pub struct PluginRecord {
+    /// Known marketplaces the manifest format can rebuild.
+    pub marketplaces: BTreeMap<Arg, MarketplaceSource>,
+    /// (name, source type) of known marketplaces the format cannot rebuild.
+    pub uncarried: Vec<(String, String)>,
+    /// "name@marketplace" of every plugin enabled in the user settings.
+    pub enabled: BTreeSet<Arg>,
+    /// "name@marketplace" of every installed plugin. Restore skips these.
+    pub installed: BTreeSet<String>,
+}
+
+/// One marketplace or plugin a setup wants, and whether this machine has it.
+pub struct PluginOp {
+    /// A noun phrase such as "plugin plug@alpha", for the plan's notes.
+    pub label: String,
+    pub state: PluginState,
+}
+
+pub enum PluginState {
+    Present,
+    Missing(ExternalCommand),
+}
+
+#[cfg(test)]
+#[test]
+fn only_markdown_is_ever_carried_into_a_backup() {
+    let md = |name: &str| name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && ext == "md");
+    for h in registry() {
+        let setup = h.setup();
+        for carry in setup.carry {
+            match carry {
+                Carry::File(name) => assert!(md(name), "{} carries {name}", h.label()),
+                Carry::Dir { dir, ext } => assert!(!dir.is_empty() && *ext == "md", "{} carries {dir}/*.{ext}", h.label()),
+            }
+        }
+        assert!(setup.carry.is_empty() || setup.config_home.starts_with('.'), "{}", h.label());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_plugin_command_only_runs_a_tool_its_harness_declares() {
+    let want = SetupManifest::parse(
+        r#"{"marketplaces":[{"name":"m","source":{"source":"github","repo":"a/b"}}],"claudePlugins":["p@m"]}"#,
+    )
+    .unwrap();
+    for h in registry() {
+        let tools = h.setup().tools;
+        for op in h.plugin_ops(&want, &PluginRecord::default()) {
+            match op.state {
+                PluginState::Missing(c) => assert!(tools.contains(&c.program.as_str()), "{} runs {}", h.label(), c.program),
+                PluginState::Present => panic!("{} reports {} present on an empty machine", h.label(), op.label),
+            }
+        }
     }
 }
 
@@ -303,6 +409,8 @@ pub struct ExternalCommand {
     pub args: Vec<String>,
     /// Working directory for the command.
     pub cwd: Option<PathBuf>,
+    /// Set in the child's environment on top of what it inherits.
+    pub env: Vec<(String, String)>,
 }
 
 impl ExternalCommand {

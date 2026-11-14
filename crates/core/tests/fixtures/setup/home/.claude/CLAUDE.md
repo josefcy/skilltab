@@ -1,0 +1,2 @@
+# Global
+Use short sentences.

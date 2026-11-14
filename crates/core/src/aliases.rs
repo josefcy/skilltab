@@ -289,6 +289,7 @@ fn merge(into: &mut Tally, from: &Tally) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::link;
     use crate::Env;
     use chrono::{TimeZone, Utc};
     use std::fs;
@@ -357,12 +358,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         skill(tmp.path(), ".agents/skills/tdd", "tdd");
         let real = tmp.path().join(".agents/skills/tdd");
-        fs::create_dir_all(tmp.path().join(".claude/skills")).unwrap();
-        for entry in ["tdd", "tdd-again"] {
-            let link = tmp.path().join(".claude/skills").join(entry);
-            let backslashed = |p: &Path| p.to_string_lossy().replace('/', "\\");
-            let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J", &backslashed(&link), &backslashed(&real)]).output().unwrap();
-            assert!(made.status.success(), "mklink: {}", String::from_utf8_lossy(&made.stdout));
+        for folder in ["tdd", "tdd-again"] {
+            let entry = tmp.path().join(".claude/skills").join(folder);
+            link(&entry, &real);
         }
         let snap = snapshot(tmp.path());
         assert_eq!(snap.bodies.len(), 1);
@@ -376,14 +374,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         skill(tmp.path(), ".codex/skills/code-review", "code-review");
         let snap = snapshot(tmp.path());
-        let ghost = InvocationKey::SkillFile(PathBuf::from(r"C:\gone\.codex\skills\code-review\SKILL.md"));
+        let gone = tmp.path().join("gone");
+        let ghost = InvocationKey::SkillFile(gone.join(".codex").join("skills").join("code-review").join("SKILL.md"));
         let t = tallies(&[(CODEX, ghost.clone(), tally(4, 1, Some(2), [0, 0, 0, 4]))]);
 
         let s = suggest(&snap, &t, &AliasStore::default());
         assert_eq!(s.len(), 1);
         assert_eq!((&s[0].from, &s[0].to, s[0].rule), (&ghost, &name("code-review"), RuleId::SkillFolder));
 
-        let not_skill_md = InvocationKey::SkillFile(PathBuf::from(r"C:\gone\code-review\notes.md"));
+        let not_skill_md = InvocationKey::SkillFile(gone.join("code-review").join("notes.md"));
         let t = tallies(&[(CODEX, not_skill_md, tally(1, 0, None, [0, 0, 0, 1]))]);
         assert!(suggest(&snap, &t, &AliasStore::default()).is_empty());
     }

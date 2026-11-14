@@ -12,13 +12,9 @@ const TOP_GHOSTS: usize = 20;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let db = args
-        .windows(2)
-        .find(|w| w[0] == "--db")
-        .map(|w| PathBuf::from(&w[1]))
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("skilltab").join("usage.db")));
+    let db = args.windows(2).find(|w| w[0] == "--db").map(|w| PathBuf::from(&w[1]));
     let (Some(db), Some(home)) = (db, std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)) else {
-        eprintln!("usage: usage --db <path>   (USERPROFILE must be set)");
+        eprintln!("usage: usage --db <path>   (USERPROFILE or HOME must be set)");
         std::process::exit(2);
     };
 

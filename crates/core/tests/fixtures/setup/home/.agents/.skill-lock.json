@@ -1,0 +1,11 @@
+{
+  "version": 3,
+  "skills": {
+    "s-two": { "source": "acme/skills", "sourceType": "github", "sourceUrl": "https://github.com/acme/skills.git", "skillFolderHash": "h" },
+    "s-one": { "source": "acme/skills", "sourceType": "github", "sourceUrl": "https://github.com/acme/skills.git", "skillFolderHash": "h" },
+    "wk": { "source": "example.test", "sourceType": "well-known", "sourceBaseUrl": "https://example.test", "sourceUrl": "https://example.test/x", "skillFolderHash": "h" },
+    "gitty": { "source": "ignored", "sourceType": "git", "sourceUrl": "https://example.test/g.git", "skillFolderHash": "h" },
+    "Upper": { "source": "acme/skills", "sourceType": "github", "skillFolderHash": "h" }
+  },
+  "dismissed": {}, "lastSelectedAgents": []
+}

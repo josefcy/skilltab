@@ -1,7 +1,7 @@
 //! Follows one entry through junctions and symlinks, one hop at a time. The only place that
 //! mints `LinkPath` and `RealDir`.
 
-use crate::fsutil::{file_id, strip_verbatim};
+use crate::fsutil::{file_id, strip_verbatim, FileId};
 use crate::model::{norm_key, LinkPath, RealDir};
 use std::collections::HashSet;
 use std::fs;
@@ -9,8 +9,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const MAX_HOPS: usize = 16;
-
-pub(super) type FileId = (u32, u64);
 
 /// The result of following one entry.
 pub(super) enum Resolved {
@@ -91,7 +89,7 @@ fn canonical_parent(target: &Path) -> PathBuf {
 }
 
 /// Where the link at `path` points, spelled as a scan spells the next hop. None when `path` is not a link.
-fn link_target(path: &Path) -> Option<PathBuf> {
+pub(crate) fn link_target(path: &Path) -> Option<PathBuf> {
     let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !is_link {
         return None;

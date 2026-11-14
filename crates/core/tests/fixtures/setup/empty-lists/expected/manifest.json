@@ -1,0 +1,12 @@
+{
+  "marketplaces": [
+    { "name": "alpha-market", "source": { "source": "github", "repo": "acme/alpha" } }
+  ],
+  "claudePlugins": [
+
+  ],
+  "skillSources": [],
+  "ownSkills": [
+
+  ]
+}

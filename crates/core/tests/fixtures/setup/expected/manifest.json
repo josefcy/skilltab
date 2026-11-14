@@ -1,0 +1,20 @@
+{
+  "marketplaces": [
+    { "name": "Beta-market", "source": { "source": "github", "repo": "acme/beta" } },
+    { "name": "alpha-market", "source": { "source": "git", "url": "https://example.test/acme/alpha.git" } },
+    { "name": "zeta-market", "source": { "source": "github", "repo": "acme/zeta" } }
+  ],
+  "claudePlugins": [
+    "plug-a@zeta-market",
+    "plug-b@alpha-market"
+  ],
+  "skillSources": [
+    { "source": "acme/skills", "skills": ["Upper", "s-one", "s-two"] },
+    { "source": "https://example.test", "skills": ["wk"] },
+    { "source": "https://example.test/g.git", "skills": ["gitty"] }
+  ],
+  "ownSkills": [
+    "Own-A",
+    "own-b"
+  ]
+}

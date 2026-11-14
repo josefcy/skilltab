@@ -78,7 +78,97 @@ impl Harness for ClaudeCode {
             program: "claude".to_owned(),
             args: vec!["plugin".to_owned(), verb.to_owned(), format!("{}@{}", b.name, b.marketplace)],
             cwd: None,
+            env: Vec::new(),
         })
+    }
+
+    fn setup(&self) -> HarnessSetup {
+        HarnessSetup {
+            config_home: ".claude",
+            carry: &[Carry::File("CLAUDE.md"), Carry::Dir { dir: "rules", ext: "md" }],
+            skills_dir: Some(".claude/skills"),
+            skills_cli_agent: Some("claude-code"),
+            tools: &["claude"],
+            sign_in: Some("Run claude and follow the login prompt."),
+            install_hint: Some("Install Claude Code from https://claude.com/claude-code."),
+        }
+    }
+
+    /// A marketplace is present when `known_marketplaces.json` names it, whatever its source type, and a plugin
+    /// when `installed_plugins.json` does.
+    fn plugin_ops(&self, want: &SetupManifest, have: &PluginRecord) -> Vec<PluginOp> {
+        let command = |args: &[&str], target: &str| ExternalCommand {
+            program: "claude".to_owned(),
+            args: args.iter().map(|a| (*a).to_owned()).chain([target.to_owned()]).collect(),
+            cwd: None,
+            env: Vec::new(),
+        };
+        let marketplaces = want.marketplaces.iter().map(|(name, source)| {
+            let known = have.marketplaces.contains_key(name) || have.uncarried.iter().any(|(n, _)| n == name.as_str());
+            let state = if known {
+                PluginState::Present
+            } else {
+                let from = match source {
+                    MarketplaceSource::Github { repo } => repo.as_str(),
+                    MarketplaceSource::Git { url } => url.as_str(),
+                };
+                PluginState::Missing(command(&["plugin", "marketplace", "add"], from))
+            };
+            PluginOp { label: format!("marketplace {}", name.as_str()), state }
+        });
+        let plugins = want.plugins.iter().map(|plugin| {
+            let state = if have.installed.contains(plugin.as_str()) {
+                PluginState::Present
+            } else {
+                PluginState::Missing(command(&["plugin", "install"], plugin.as_str()))
+            };
+            PluginOp { label: format!("plugin {}", plugin.as_str()), state }
+        });
+        marketplaces.chain(plugins).collect()
+    }
+
+    /// Reads the same three files `backup.ps1` reads, and the installed set for Restore. Only user
+    /// `settings.json` counts for enabled plugins, and only a value of true.
+    fn read_plugins(&self, env: &Env) -> Result<PluginRecord, String> {
+        let plugins = env.home.join(".claude").join("plugins");
+        let read = |path: &Path| fsutil::read_json(path).map_err(|e| format!("Could not read {}: {e}.", path.display()));
+        let mut record = PluginRecord::default();
+
+        let known = plugins.join("known_marketplaces.json");
+        if let Some(json) = read(&known)? {
+            let map = json.as_object().ok_or_else(|| format!("{} is not a JSON object.", known.display()))?;
+            for (name, entry) in map {
+                let field = |k: &str| entry.get("source").and_then(|s| s.get(k)).and_then(|v| v.as_str()).filter(|v| !v.is_empty());
+                let kind = field("source");
+                let arg = |what: &str, v: &str| Arg::parse(v).map_err(|e| format!("Marketplace \"{name}\" in {}: {what} {e}.", known.display()));
+                let source = match (kind, field("repo"), field("url")) {
+                    (Some(k), Some(repo), _) if k.eq_ignore_ascii_case("github") => MarketplaceSource::Github { repo: arg("repo", repo)? },
+                    (Some(k), _, Some(url)) if k.eq_ignore_ascii_case("git") => MarketplaceSource::Git { url: arg("url", url)? },
+                    _ => {
+                        record.uncarried.push((name.clone(), kind.unwrap_or("unknown").to_owned()));
+                        continue;
+                    }
+                };
+                let name = Arg::parse(name).map_err(|e| format!("{}: the marketplace name {e}.", known.display()))?;
+                record.marketplaces.insert(name, source);
+            }
+        }
+
+        let settings = env.home.join(".claude").join("settings.json");
+        if let Some(json) = read(&settings)?
+            && let Some(map) = json.get("enabledPlugins").and_then(|e| e.as_object())
+        {
+            for key in map.iter().filter(|(_, v)| v.as_bool() == Some(true)).map(|(k, _)| k) {
+                record.enabled.insert(Arg::parse(key).map_err(|e| format!("{}: the plugin {e}.", settings.display()))?);
+            }
+        }
+
+        if let Some(json) = read(&plugins.join("installed_plugins.json"))?
+            && let Some(map) = json.get("plugins").and_then(|p| p.as_object())
+        {
+            record.installed = map.keys().cloned().collect();
+        }
+        Ok(record)
     }
 }
 
@@ -444,5 +534,108 @@ mod tests {
         let d = ClaudeCode.discover(&env(t.path()), &[]);
         assert!(d.bundles.is_empty());
         assert_eq!(d.unreadable.len(), 1);
+    }
+
+    fn names<T: AsRef<str>>(items: impl IntoIterator<Item = T>) -> Vec<String> {
+        items.into_iter().map(|i| i.as_ref().to_owned()).collect()
+    }
+
+    #[test]
+    fn plugin_records_split_carried_marketplaces_from_ones_the_format_cannot_rebuild() {
+        let home = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/setup/home");
+        let record = ClaudeCode.read_plugins(&env(&home)).unwrap();
+
+        assert_eq!(names(record.marketplaces.keys().map(Arg::as_str)), ["Beta-market", "alpha-market", "zeta-market"]);
+        assert_eq!(record.uncarried, [("local-market".to_owned(), "directory".to_owned())]);
+        assert_eq!(names(record.enabled.iter().map(Arg::as_str)), ["plug-a@zeta-market", "plug-b@alpha-market"], "false is not enabled");
+        assert!(record.installed.is_empty());
+    }
+
+    #[test]
+    fn only_user_settings_count_and_only_a_value_of_true() {
+        let t = tempfile::tempdir().unwrap();
+        let claude = t.path().join(".claude");
+        fs::create_dir_all(claude.join("plugins")).unwrap();
+        fs::write(claude.join("settings.json"), r#"{"enabledPlugins":{"a@m":true,"b@m":"true","c@m":1}}"#).unwrap();
+        fs::write(claude.join("settings.local.json"), r#"{"enabledPlugins":{"d@m":true}}"#).unwrap();
+        fs::write(claude.join("plugins").join("installed_plugins.json"), r#"{"version":2,"plugins":{"a@m":[],"x@m":[]}}"#).unwrap();
+
+        let record = ClaudeCode.read_plugins(&env(t.path())).unwrap();
+        assert_eq!(names(record.enabled.iter().map(Arg::as_str)), ["a@m"]);
+        assert_eq!(names(&record.installed), ["a@m", "x@m"]);
+    }
+
+    #[test]
+    fn a_missing_home_has_no_plugins_and_an_unreadable_record_is_an_error_that_names_the_file() {
+        let t = tempfile::tempdir().unwrap();
+        let record = ClaudeCode.read_plugins(&env(t.path())).unwrap();
+        assert!(record.marketplaces.is_empty() && record.enabled.is_empty() && record.uncarried.is_empty());
+
+        let claude = t.path().join(".claude");
+        fs::create_dir_all(claude.join("plugins")).unwrap();
+        for (file, text) in [("plugins/known_marketplaces.json", "{oops"), ("settings.json", "[1,"), ("plugins/installed_plugins.json", "nope")] {
+            fs::write(claude.join(file), text).unwrap();
+            let e = ClaudeCode.read_plugins(&env(t.path())).unwrap_err();
+            assert!(e.contains(file.rsplit('/').next().unwrap()), "{e}");
+            fs::remove_file(claude.join(file)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_marketplace_with_a_flag_for_a_repo_is_an_error() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join(".claude").join("plugins");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("known_marketplaces.json"), r#"{"m":{"source":{"source":"github","repo":"--evil"}}}"#).unwrap();
+        assert!(ClaudeCode.read_plugins(&env(t.path())).unwrap_err().contains("\"m\""));
+    }
+
+    fn wanted() -> SetupManifest {
+        SetupManifest::parse(
+            r#"{"marketplaces":[
+                {"name":"alpha","source":{"source":"github","repo":"acme/alpha"}},
+                {"name":"beta","source":{"source":"git","url":"https://example.com/acme/beta.git"}}],
+              "claudePlugins":["plug@alpha","other@beta"]}"#,
+        )
+        .unwrap()
+    }
+
+    fn describe(ops: &[PluginOp]) -> Vec<String> {
+        ops.iter()
+            .map(|op| match &op.state {
+                PluginState::Present => format!("{}: present", op.label),
+                PluginState::Missing(c) => format!("{}: {}", op.label, c.display()),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plugin_ops_name_the_claude_command_for_everything_missing_marketplaces_first() {
+        assert_eq!(
+            describe(&ClaudeCode.plugin_ops(&wanted(), &PluginRecord::default())),
+            [
+                "marketplace alpha: claude plugin marketplace add acme/alpha",
+                "marketplace beta: claude plugin marketplace add https://example.com/acme/beta.git",
+                "plugin other@beta: claude plugin install other@beta",
+                "plugin plug@alpha: claude plugin install plug@alpha",
+            ]
+        );
+    }
+
+    #[test]
+    fn plugin_ops_skip_what_the_records_already_hold() {
+        let mut have = PluginRecord::default();
+        have.marketplaces.insert(Arg::parse("alpha").unwrap(), MarketplaceSource::Github { repo: Arg::parse("acme/alpha").unwrap() });
+        have.uncarried.push(("beta".to_owned(), "directory".to_owned()));
+        have.installed.insert("plug@alpha".to_owned());
+        assert_eq!(
+            describe(&ClaudeCode.plugin_ops(&wanted(), &have)),
+            [
+                "marketplace alpha: present",
+                "marketplace beta: present",
+                "plugin other@beta: claude plugin install other@beta",
+                "plugin plug@alpha: present",
+            ]
+        );
     }
 }

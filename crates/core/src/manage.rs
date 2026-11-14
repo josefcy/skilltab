@@ -3,17 +3,36 @@
 //! expectation against the live disk first. Bundle operations are plans too, with one `Run` step,
 //! so the UI has one confirm flow.
 
+mod setup;
 mod shelf;
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
 mod win;
+
+#[cfg(unix)]
+use unix as sys;
+#[cfg(windows)]
+use win as sys;
 
 use crate::harness::{registry, BundleOp, BundleRef, ExternalCommand};
 use crate::model::*;
 use crate::scan::{content_hash, still_link_to};
+use crate::setup::{ExportInput, RestoreInput};
 use sha1::{Digest, Sha1};
-use std::io;
+use std::ffi::OsString;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub(crate) use shelf::Shelf;
+pub(crate) use sys::TRASH_NAME;
+
+/// Tests make links through the same code `apply` uses. Production code cannot reach it.
+#[cfg(test)]
+pub(crate) fn create_link(entry: &Path, target: &Path) -> io::Result<()> {
+    sys::create_link(entry, target)
+}
 
 // ---------------------------------------------------------------- requests and plans
 
@@ -21,7 +40,7 @@ pub(crate) use shelf::Shelf;
 pub(crate) enum ManageAction {
     /// Take the skill away from one harness at one entry. A link goes to the shelf, so it can be put back.
     RemoveMount(MountId),
-    /// Remove every mount's link, then send the real folder to the Recycle Bin.
+    /// Remove every mount's link, then send the real folder to the Recycle Bin or trash.
     DeleteBody(SkillId),
     /// `DeleteBody` for several skills in one plan. A skill that cannot be deleted is skipped with its reasons
     /// and does not block the others.
@@ -30,6 +49,11 @@ pub(crate) enum ManageAction {
     Disable(MountId),
     Restore(ShelfId),
     Bundle(BundleId, BundleOp),
+    /// Write this machine's setup into the setup folder: `manifest.json` and the allowlisted config files.
+    /// Holds what `setup::read_export` read, so planning stays pure.
+    ExportSetup(Arc<ExportInput>),
+    /// Rebuild this machine's setup from the setup folder. Holds what `setup::read_restore` read, so planning stays pure.
+    RestoreSetup(Arc<RestoreInput>),
 }
 
 pub(crate) struct Plan {
@@ -40,6 +64,25 @@ pub(crate) struct Plan {
     pub blockers: Vec<Blocker>,
     /// Only a bulk delete fills this. Each skill here contributes no steps.
     pub skipped: Vec<Skipped>,
+    /// Plan lines that are neither a step nor a blocker: what is already in place, what needs the user's eye,
+    /// and what only the user can do afterwards.
+    pub notes: Vec<Note>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Note {
+    pub kind: NoteKind,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoteKind {
+    /// Already as wanted, so it has no step.
+    Present,
+    /// Left as it is, or left out, and the user should know.
+    Attention,
+    /// Something only the user can do after the plan runs. Export has none. Restore's sign-in lines are these.
+    Manual,
 }
 
 pub(crate) struct Skipped {
@@ -51,14 +94,28 @@ pub(crate) struct Skipped {
 /// and `apply` refuses the whole plan when an unfinished step's expectation no longer holds.
 #[derive(Clone, Debug)]
 pub(crate) enum Step {
-    /// Delete the reparse point, never what it points to. `shelve` is written first when the link can be put back.
+    /// Delete the link itself, never what it points to. `shelve` is written first when the link can be put back.
     RemoveLink { link: LinkPath, target: PathBuf, shelve: Option<ShelfEntry> },
-    /// Only a `RealDir` can be recycled, so a junction never reaches the Recycle Bin.
+    /// Only a `RealDir` can be recycled, so a link never reaches the Recycle Bin or trash.
     Recycle { dir: RealDir, hash: ContentHash },
     Stash { dir: RealDir, hash: ContentHash, shelve: ShelfEntry, stash: PathBuf },
-    Relink { shelf: ShelfId, entry: PathBuf, target: PathBuf },
+    /// Creates `entry` as a link to `target`. `shelf` is the shelf entry it puts back, or None for a first link.
+    Link { entry: PathBuf, target: PathBuf, shelf: Option<ShelfId> },
     Unstash { shelf: ShelfId, stash: PathBuf, to: PathBuf },
     Run { command: ExternalCommand },
+    /// Writes `bytes` to `to` and creates its parent folders. `was` says what the planner saw there.
+    /// Over `Was::Absent` the file is created with `create_new`, so a file that appears later is never replaced.
+    /// Over `Was::Hash` it goes through a temp file in the same folder and a rename.
+    Write { to: PathBuf, bytes: Arc<[u8]>, was: Was },
+    /// Deletes one file, only while it still has the content the planner saw.
+    Delete { path: PathBuf, was: ContentHash },
+}
+
+/// What a `Write` expects to find at its destination.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Was {
+    Absent,
+    Hash(ContentHash),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,13 +150,15 @@ pub(crate) fn plan(snap: &Snapshot, shelf: &Shelf, action: ManageAction) -> Plan
         ManageAction::DeleteBodies(ids) => delete_bodies(snap, ids, &mut p),
         ManageAction::Restore(id) => restore(snap, id, &mut p),
         ManageAction::Bundle(b, op) => bundle(snap, b, *op, &mut p),
+        ManageAction::ExportSetup(input) => setup::plan_export(input, &mut p),
+        ManageAction::RestoreSetup(input) => setup::plan_restore(input, &mut p),
     }
     p
 }
 
 impl Plan {
     fn new(revision: u64, action: ManageAction) -> Plan {
-        Plan { revision, action, steps: Vec::new(), effects: Vec::new(), blockers: Vec::new(), skipped: Vec::new() }
+        Plan { revision, action, steps: Vec::new(), effects: Vec::new(), blockers: Vec::new(), skipped: Vec::new(), notes: Vec::new() }
     }
     fn block(&mut self, b: Blocker) {
         if !self.blockers.contains(&b) {
@@ -216,7 +275,7 @@ fn restore(snap: &Snapshot, id: &ShelfId, p: &mut Plan) {
                     remedy: "Reinstall the skill, then restore the link.".into(),
                 });
             }
-            p.steps.push(Step::Relink { shelf: e.id.clone(), entry: e.entry.clone(), target: target.clone() });
+            p.steps.push(Step::Link { entry: e.entry.clone(), target: target.clone(), shelf: Some(e.id.clone()) });
         }
         Held::Folder { stash } => p.steps.push(Step::Unstash { shelf: e.id.clone(), stash: stash.clone(), to: e.entry.clone() }),
     }
@@ -296,34 +355,64 @@ pub(crate) trait Os: Send + Sync {
     fn recycle(&self, dir: &RealDir) -> io::Result<()>;
     /// Runs the command to completion and returns its output.
     fn run(&self, command: &ExternalCommand) -> io::Result<String>;
+    /// Whether a program of this name can be found where `run` would look for it.
+    fn find_tool(&self, program: &str) -> bool;
 }
 
 pub(crate) struct SystemOs;
 
+/// PATH, then the folders a GUI launched app misses because it starts with a short PATH.
+fn tool_dirs(path: Option<OsString>, home: Option<&Path>) -> Vec<PathBuf> {
+    path.iter().flat_map(std::env::split_paths).chain(sys::extra_tool_dirs(home)).collect()
+}
+
+fn real_tool_dirs() -> Vec<PathBuf> {
+    tool_dirs(std::env::var_os("PATH"), std::env::var_os("HOME").map(PathBuf::from).as_deref())
+}
+
+fn has_tool(dir: &Path, program: &str) -> bool {
+    sys::tool_names(program).iter().any(|name| sys::is_executable(&dir.join(name)))
+}
+
 impl Os for SystemOs {
     fn recycle(&self, dir: &RealDir) -> io::Result<()> {
-        win::recycle(dir)
+        sys::recycle(dir)
     }
 
     fn run(&self, c: &ExternalCommand) -> io::Result<String> {
+        let path = std::env::join_paths(real_tool_dirs()).ok().filter(|_| cfg!(unix));
         let command = |program: &str| {
             let mut cmd = std::process::Command::new(program);
-            cmd.args(&c.args);
+            cmd.args(&c.args).stdin(std::process::Stdio::null());
             if let Some(dir) = &c.cwd {
                 cmd.current_dir(dir);
             }
+            if let Some(path) = &path {
+                cmd.env("PATH", path);
+            }
+            cmd.envs(c.env.iter().map(|(k, v)| (k, v)));
             cmd
         };
+        let spawned = command(&c.program).output();
         // npm installs CLIs as `<name>.cmd`, which Command does not find under the bare name.
-        let out = match command(&c.program).output() {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => command(&format!("{}.cmd", c.program)).output()?,
-            other => other?,
+        #[cfg(windows)]
+        let spawned = match spawned {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => command(&format!("{}.cmd", c.program)).output(),
+            other => other,
         };
+        let out = spawned.map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => io::Error::new(e.kind(), format!("`{}` is not installed or not on PATH", c.program)),
+            _ => e,
+        })?;
         let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_owned();
         if !out.status.success() {
             return Err(io::Error::other(format!("{} exited with {}: {text}", c.display(), out.status)));
         }
         Ok(text)
+    }
+
+    fn find_tool(&self, program: &str) -> bool {
+        real_tool_dirs().iter().any(|dir| has_tool(dir, program))
     }
 }
 
@@ -390,9 +479,11 @@ fn is_done(step: &Step) -> bool {
         Step::RemoveLink { link, .. } => !exists(link.as_path()),
         Step::Recycle { dir, .. } => !exists(dir.as_path()),
         Step::Stash { dir, stash, .. } => !exists(dir.as_path()) && exists(stash),
-        Step::Relink { entry, target, .. } => still_link_to(entry, target),
+        Step::Link { entry, target, .. } => still_link_to(entry, target),
         Step::Unstash { stash, to, .. } => !exists(stash) && exists(to),
         Step::Run { .. } => false,
+        Step::Write { to, bytes, .. } => std::fs::read(to).is_ok_and(|have| have == **bytes),
+        Step::Delete { path, .. } => !exists(path),
     }
 }
 
@@ -410,7 +501,7 @@ fn stale_reason(step: &Step) -> Option<String> {
         Step::RemoveLink { link, target, .. } => (!still_link_to(link.as_path(), target))
             .then(|| format!("{} no longer points to {}.", link.as_path().display(), target.display())),
         Step::Recycle { dir, hash } | Step::Stash { dir, hash, .. } => changed(dir, hash),
-        Step::Relink { entry, target, .. } => {
+        Step::Link { entry, target, .. } => {
             if exists(entry) {
                 Some(format!("Something is at {} now.", entry.display()))
             } else if !target.exists() {
@@ -429,6 +520,12 @@ fn stale_reason(step: &Step) -> Option<String> {
             }
         }
         Step::Run { .. } => None,
+        Step::Write { to, was: Was::Absent, .. } => exists(to).then(|| format!("Something is at {} now.", to.display())),
+        Step::Write { to, was: Was::Hash(hash), .. } | Step::Delete { path: to, was: hash } => match std::fs::read(to) {
+            Ok(have) if &ContentHash::of(&have) == hash => None,
+            Ok(_) => Some(format!("{} changed since the plan was made.", to.display())),
+            Err(_) => Some(format!("{} can no longer be read.", to.display())),
+        },
     }
 }
 
@@ -438,7 +535,7 @@ fn stamped(e: &ShelfEntry) -> ShelfEntry {
 
 fn run_step(step: &Step, shelf: &mut Shelf, os: &dyn Os, output: &mut Vec<String>) -> io::Result<StepResult> {
     match step {
-        Step::Relink { shelf: id, .. } | Step::Unstash { shelf: id, .. } if is_done(step) => {
+        Step::Link { shelf: Some(id), .. } | Step::Unstash { shelf: id, .. } if is_done(step) => {
             shelf.forget(id)?;
             return Ok(StepResult::Skipped);
         }
@@ -450,7 +547,7 @@ fn run_step(step: &Step, shelf: &mut Shelf, os: &dyn Os, output: &mut Vec<String
             if let Some(e) = shelve {
                 shelf.record(stamped(e))?;
             }
-            win::remove_link(link)?;
+            sys::remove_link(link)?;
         }
         Step::Recycle { dir, .. } => os.recycle(dir)?,
         Step::Stash { dir, shelve, stash, .. } => {
@@ -460,29 +557,61 @@ fn run_step(step: &Step, shelf: &mut Shelf, os: &dyn Os, output: &mut Vec<String
             }
             std::fs::rename(dir.as_path(), stash).map_err(|e| moved_error(e, stash))?;
         }
-        Step::Relink { shelf: id, entry, target } => {
-            win::create_junction(entry, target)?;
-            shelf.forget(id)?;
+        Step::Link { entry, target, shelf: id } => {
+            if let Some(parent) = entry.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            sys::create_link(entry, target)?;
+            if let Some(id) = id {
+                shelf.forget(id)?;
+            }
         }
         Step::Unstash { shelf: id, stash, to } => {
             std::fs::rename(stash, to).map_err(|e| moved_error(e, to))?;
             shelf.forget(id)?;
         }
         Step::Run { command } => output.push(os.run(command)?),
+        Step::Write { to, bytes, was } => write_file(to, bytes, was)?,
+        Step::Delete { path, .. } => std::fs::remove_file(path)?,
     }
     Ok(StepResult::Done)
+}
+
+fn write_file(to: &Path, bytes: &[u8], was: &Was) -> io::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match was {
+        Was::Absent => {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
+            file.write_all(bytes).inspect_err(|_| {
+                let _ = std::fs::remove_file(to);
+            })
+        }
+        Was::Hash(_) => {
+            let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let temp = to.with_file_name(format!(".{name}.skilltab-tmp"));
+            std::fs::write(&temp, bytes)?;
+            std::fs::rename(&temp, to).inspect_err(|_| {
+                let _ = std::fs::remove_file(&temp);
+            })
+        }
+    }
 }
 
 /// A rename cannot cross volumes. Copying and deleting instead would turn a cheap, atomic move into
 /// a partial one, so the step fails and says why.
 fn moved_error(e: io::Error, to: &Path) -> io::Error {
-    const ERROR_NOT_SAME_DEVICE: i32 = 17;
-    if e.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE) {
-        io::Error::other(format!("{} is on another drive, and skilltab only moves folders within one drive.", to.display()))
+    if e.kind() == io::ErrorKind::CrossesDevices {
+        io::Error::other(format!("{} is on another volume, and skilltab only moves folders within one volume.", to.display()))
     } else {
         e
     }
 }
 
+#[cfg(test)]
+mod fake_tools;
+#[cfg(test)]
+mod restore_tests;
 #[cfg(test)]
 pub(crate) mod tests;

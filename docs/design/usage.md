@@ -4,7 +4,7 @@
 
 skilltab has one row per **skill body**. A skill body is one physical folder holding a `SKILL.md`. It is not one row per path. `~/.claude/skills/tdd` (a junction), `~/.agents/skills/tdd` (another junction) and `~/.agents/.../tdd` (the real folder) all collapse into one row. That row has one **mount** per place a harness sees the skill.
 
-The UI never sends a path to the backend. It sends ids that the backend issued, so the webview can never ask the core to delete an arbitrary path.
+The UI sends ids that the backend issued, so the webview can never ask the core to delete an arbitrary path. The one path it sends is the setup folder of Export and Restore, which core parses once into a `SetupDir`. An export writes only `manifest.json` and allowlisted files under `config/` in that folder, and it deletes only allowlisted files there. It refuses a folder where `manifest.json` or anything under `config/` is a link. A restore only reads that folder. It writes links and allowlisted files on this machine, and the copy of a differing file beside it as `<name>.from-backup`.
 
 Every change goes through **plan, then apply**. A plan is a pure preview built from the current snapshot: the exact filesystem steps, what else breaks, and what blocks the change. Apply re-checks the plan's preconditions against the live disk before doing anything.
 
@@ -47,7 +47,21 @@ const j = await commands.getJstack(true);   // true = run `git fetch` first to c
 await commands.planAction({ kind: "jstack", op: { kind: "pullAndSync" } });
 await commands.planAction({ kind: "jstack", op: { kind: "installDeclared", source: "mattpocock/skills", skills: ["tdd"] } });
 
-// 7. Refresh: rescans the folders and ingests only the transcript bytes appended since the last run.
+// 7. Restore a setup on a new machine. The folder is a clone of the setup repo. Planning reads and changes nothing.
+const restore = await commands.planAction({ kind: "restoreSetup", folder: "~/setup" });
+// restore.steps   -> links and files first, then the exact commands, in order:
+//   { kind: "link",  detail: "C:\\Users\\..\\.claude\\skills\\own1 → C:\\Users\\..\\setup\\skills\\own1" }
+//   { kind: "write", detail: "C:\\Users\\..\\.claude\\CLAUDE.md" }
+//   { kind: "run",   detail: "claude plugin marketplace add acme/alpha" }
+//   { kind: "run",   detail: "npx --yes skills add acme/skills -g -a claude-code codex -y --skill s1 s2" }
+// restore.notes   -> present: "~/.claude/rules/r.md already matches the backup." (no step)
+//                    attention: "~/.claude/CLAUDE.md differs from the backup. The backup copy goes to ...from-backup. Compare and merge by hand."
+//                    manual: "Sign in to Claude Code. Run claude and follow the login prompt."
+// restore.blockers -> a `claude` or `npx` that is not installed, with where to get it. Nothing runs.
+// After a completed restore the next plan has no steps, `ready` is false and every item is a present note.
+await commands.applyPlan(restore.id);   // stops at the first failing command. Planning again shows only what is left.
+
+// 8. Refresh: rescans the folders and ingests only the transcript bytes appended since the last run.
 events.ingestProgress.listen(p => setProgress(p.payload));   // { filesDone, filesTotal, bytesDone }
 const report = await commands.refresh();
 ```

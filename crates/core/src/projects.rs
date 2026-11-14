@@ -1,6 +1,7 @@
 //! Project roots, found from the `cwd` in the first lines of Claude transcripts, never from folder names.
 //! The usage index will own this once it tracks transcripts incrementally. Until then each refresh rereads the heads.
 
+use crate::model::norm_key;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -25,7 +26,7 @@ pub fn discover_projects(home: &Path) -> Vec<PathBuf> {
     for cwd in cwds.into_iter().filter(|c| c.is_dir()) {
         let root = cwd.ancestors().find(|a| a.join(".git").exists()).unwrap_or(&cwd).to_path_buf();
         if root != home {
-            roots.entry(root.to_string_lossy().to_lowercase()).or_insert(root);
+            roots.entry(norm_key(&root)).or_insert(root);
         }
     }
     roots.into_values().collect()

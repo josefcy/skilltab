@@ -9,7 +9,7 @@ type Load = { status: "loading" } | { status: "ok"; detail: SkillDetail } | { st
 
 /** Lets a long path wrap after a separator instead of mid-name. */
 function breakable(path: string) {
-  return path.split("\\").flatMap((part, i, all) => (i < all.length - 1 ? [part, "\\", <wbr key={i} />] : [part]));
+  return path.split(/([\\/])/).flatMap((part, i) => (i % 2 ? [part, <wbr key={i} />] : [part]));
 }
 
 function errorText(e: CoreError): string {
@@ -18,7 +18,7 @@ function errorText(e: CoreError): string {
 
 type Manage = (request: ActionRequest) => void;
 
-export function Detail({ id, revision, bundles, onManage }: { id: string; revision: number; bundles: BundleRow[]; onManage: Manage }) {
+export function Detail({ id, revision, bundles, trashName, onManage }: { id: string; revision: number; bundles: BundleRow[]; trashName: string; onManage: Manage }) {
   const [load, setLoad] = useState<Load>({ status: "loading" });
 
   useEffect(() => {
@@ -43,17 +43,17 @@ export function Detail({ id, revision, bundles, onManage }: { id: string; revisi
       </aside>
     );
   }
-  return <DetailBody d={load.detail} bundles={bundles} onManage={onManage} />;
+  return <DetailBody d={load.detail} bundles={bundles} trashName={trashName} onManage={onManage} />;
 }
 
-function DetailBody({ d, bundles, onManage }: { d: SkillDetail; bundles: BundleRow[]; onManage: Manage }) {
+function DetailBody({ d, bundles, trashName, onManage }: { d: SkillDetail; bundles: BundleRow[]; trashName: string; onManage: Manage }) {
   const { row } = d;
   return (
     <aside className="detail">
       <header className="detail-head">
         <div className="detail-title">
           <h2>{row.name}</h2>
-          <ManageMenu d={d} bundles={bundles} onManage={onManage} />
+          <ManageMenu d={d} bundles={bundles} trashName={trashName} onManage={onManage} />
         </div>
         <p className="path" title={d.dir}>
           {d.dir}
@@ -111,7 +111,7 @@ function DetailBody({ d, bundles, onManage }: { d: SkillDetail; bundles: BundleR
 type MenuItem = { label: string; hint: string; request: ActionRequest; danger?: boolean };
 
 /** Every action that applies to this skill's mounts, body and bundles. The planner decides whether each is allowed. */
-function ManageMenu({ d, bundles, onManage }: { d: SkillDetail; bundles: BundleRow[]; onManage: Manage }) {
+function ManageMenu({ d, bundles, trashName, onManage }: { d: SkillDetail; bundles: BundleRow[]; trashName: string; onManage: Manage }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -138,7 +138,7 @@ function ManageMenu({ d, bundles, onManage }: { d: SkillDetail; bundles: BundleR
         : { label: `Enable plugin ${b.name}`, hint, request: { kind: "bundleEnable", bundle: b.id } },
     );
   }
-  items.push({ label: "Delete everywhere", hint: "Every link, then the folder to the Recycle Bin", request: { kind: "deleteBody", skill: d.row.id }, danger: true });
+  items.push({ label: "Delete everywhere", hint: `Every link, then the folder to the ${trashName}`, request: { kind: "deleteBody", skill: d.row.id }, danger: true });
 
   return (
     <div className="menu-anchor" ref={ref}>
@@ -206,7 +206,7 @@ function Mount({ m }: { m: MountDetail }) {
           </li>
         ))}
       </ol>
-      {revealError && <p className="error">Could not open Explorer: {revealError}</p>}
+      {revealError && <p className="error">Could not open the folder: {revealError}</p>}
       <p className="keys sub">
         Answers to{" "}
         {m.keys.map((k) => (
