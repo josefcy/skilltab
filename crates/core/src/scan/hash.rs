@@ -1,5 +1,4 @@
-//! Tree hash over a skill folder. jstack drift compares this hash across two folders, so the
-//! walk must not depend on where the folder lives.
+//! Tree hash over a skill folder.
 
 use crate::model::{ContentHash, RealDir};
 use sha1::{Digest, Sha1};
@@ -10,14 +9,8 @@ use std::path::{Path, PathBuf};
 const SKIPPED_DIRS: &[&str] = &[".git", "node_modules"];
 
 pub(crate) fn content_hash(dir: &RealDir) -> ContentHash {
-    content_hash_of(dir.as_path())
-}
-
-/// The same walk for a folder that is not a scanned body, such as a skill in the jstack clone.
-/// jstack compares it with a body's hash, so there is deliberately one hasher.
-pub(crate) fn content_hash_of(dir: &Path) -> ContentHash {
     let mut files: Vec<(String, PathBuf)> = Vec::new();
-    collect(dir, "", &mut files);
+    collect(dir.as_path(), "", &mut files);
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut h = Sha1::new();

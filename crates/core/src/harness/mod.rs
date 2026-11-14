@@ -78,7 +78,7 @@ pub struct EntryFact {
     pub scope: ScopeFact,
     pub naming: Naming,
     /// What the harness itself knows about who manages the entry. Provenance may refine it
-    /// (to JstackSync or SkillsCli) when this says Unmanaged. For a bundle entry the scanner
+    /// (to SkillsCli) when this says Unmanaged. For a bundle entry the scanner
     /// sets `PluginManager`, because only it mints BundleIds, unless this says HarnessBuiltin.
     pub owner_hint: Ownership,
     /// When two entries of this harness answer to the same name, the lower rank is the one
@@ -301,7 +301,7 @@ pub enum BundleOp {
 pub struct ExternalCommand {
     pub program: String,
     pub args: Vec<String>,
-    /// Working directory. jstack's scripts and `git pull` must run inside the clone.
+    /// Working directory for the command.
     pub cwd: Option<PathBuf>,
 }
 

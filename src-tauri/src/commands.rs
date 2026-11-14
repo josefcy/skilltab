@@ -2,7 +2,7 @@
 //! `collect_commands!` drives both the IPC handler and `src/bindings.ts`, so the two cannot disagree.
 
 use serde::{Deserialize, Serialize};
-use skilltab_core::view::{ActionRequest, AliasPick, AliasSuggestionView, ApplyReport, CoreError, Inventory, JstackView, PlanView, RefreshReport, SkillDetail};
+use skilltab_core::view::{ActionRequest, AliasPick, AliasSuggestionView, ApplyReport, CoreError, Inventory, PlanView, RefreshReport, SkillDetail};
 use skilltab_core::Skilltab;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager, State};
@@ -53,22 +53,6 @@ fn plan_action(app: State<'_, Skilltab>, action: ActionRequest) -> Result<PlanVi
 #[specta::specta]
 fn apply_plan(handle: AppHandle, plan_id: String) -> Result<ApplyReport, CoreError> {
     let report = handle.state::<Skilltab>().apply(&plan_id)?;
-    let _ = InventoryChanged { revision: report.revision }.emit(&handle);
-    Ok(report)
-}
-
-/// None when the machine has no jstack clone. Reads the last refresh and runs no git.
-#[tauri::command(async)]
-#[specta::specta]
-fn get_jstack(app: State<'_, Skilltab>) -> Option<JstackView> {
-    app.jstack()
-}
-
-/// The one jstack call that reaches the network. It rescans, so the UI hears about the new revision.
-#[tauri::command(async)]
-#[specta::specta]
-fn jstack_fetch(handle: AppHandle) -> Result<RefreshReport, CoreError> {
-    let report = handle.state::<Skilltab>().jstack_fetch()?;
     let _ = InventoryChanged { revision: report.revision }.emit(&handle);
     Ok(report)
 }
@@ -127,8 +111,6 @@ pub fn builder() -> Builder<tauri::Wry> {
             refresh,
             plan_action,
             apply_plan,
-            get_jstack,
-            jstack_fetch,
             alias_suggestions,
             confirm_alias,
             confirm_aliases,

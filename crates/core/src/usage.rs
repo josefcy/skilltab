@@ -503,7 +503,7 @@ mod tests {
             Fixture { home: tempfile::tempdir().unwrap(), db: tempfile::tempdir().unwrap() }
         }
         fn env(&self) -> Env {
-            Env { home: self.home.path().to_path_buf(), projects: vec![], jstack_root: None }
+            Env { home: self.home.path().to_path_buf(), projects: vec![] }
         }
         fn index(&self) -> UsageIndex {
             UsageIndex::open(&self.db.path().join("usage.db")).unwrap()

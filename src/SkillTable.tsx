@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { ShelfRow, SkillRow } from "./bindings";
 import type { Sort, SortKey } from "./filters";
 import { ago } from "./format";
-import { Empty, HarnessChip, JstackBadge } from "./ui";
+import { Empty, HarnessChip } from "./ui";
 
 type Props = {
   rows: SkillRow[];
@@ -11,6 +11,9 @@ type Props = {
   onRestore: (shelfId: string) => void;
   selected: string | null;
   onSelect: (id: string) => void;
+  /** Ids ticked for a bulk action. Separate from `selected`, which is the row open in the detail pane. */
+  checked: ReadonlySet<string>;
+  onCheck: (ids: string[], on: boolean) => void;
   sort: Sort;
   onSort: (key: SortKey) => void;
 };
@@ -22,7 +25,6 @@ const COLUMNS: { key: SortKey; label: string; hint?: string; className?: string 
   { key: "scopes", label: "Scope", className: "c-scope" },
   { key: "owner", label: "Owner", className: "c-owner" },
   { key: "origin", label: "Origin", className: "c-origin" },
-  { key: "jstack", label: "jstack", hint: "relation to your jstack repo", className: "c-jstack" },
   { key: "uses", label: "Uses", hint: "all time, last 30 days", className: "c-uses num" },
   { key: "lastUsed", label: "Last used", className: "c-last" },
 ];
@@ -42,12 +44,29 @@ function Last({ r }: { r: SkillRow }) {
   return r.usage.lastUsed ? <>{ago(r.usage.lastUsed)}</> : <span className="sub">never</span>;
 }
 
-export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort, onSort }: Props) {
+export function SkillTable({ rows, shelved, onRestore, selected, onSelect, checked, onCheck, sort, onSort }: Props) {
   const selectedRef = useRef<HTMLTableRowElement | null>(null);
+  const headRef = useRef<HTMLInputElement | null>(null);
+  const lastToggled = useRef<string | null>(null);
 
   useEffect(() => {
     selectedRef.current?.scrollIntoView({ block: "nearest" });
   }, [selected]);
+
+  const allOn = rows.length > 0 && rows.every((r) => checked.has(r.id));
+  const someOn = rows.some((r) => checked.has(r.id));
+  useEffect(() => {
+    if (headRef.current) headRef.current.indeterminate = someOn && !allOn;
+  }, [someOn, allOn]);
+
+  /** Shift extends from the last toggled row to this one, in the order the table shows. */
+  const toggle = (id: string, range: boolean) => {
+    const from = range && lastToggled.current ? rows.findIndex((r) => r.id === lastToggled.current) : -1;
+    const to = rows.findIndex((r) => r.id === id);
+    const ids = from >= 0 && to >= 0 ? rows.slice(Math.min(from, to), Math.max(from, to) + 1).map((r) => r.id) : [id];
+    lastToggled.current = id;
+    onCheck(ids, !checked.has(id));
+  };
 
   if (rows.length === 0 && shelved.length === 0) {
     return (
@@ -60,6 +79,16 @@ export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort,
       <table className="grid">
         <thead>
           <tr>
+            <th className="c-check">
+              <input
+                ref={headRef}
+                type="checkbox"
+                aria-label="Select every skill shown"
+                checked={allOn}
+                disabled={rows.length === 0}
+                onChange={() => onCheck(rows.map((r) => r.id), !allOn)}
+              />
+            </th>
             {COLUMNS.map((c) => (
               <th
                 key={c.key}
@@ -84,8 +113,18 @@ export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort,
                 key={r.id}
                 ref={isSel ? selectedRef : undefined}
                 aria-selected={isSel}
+                data-checked={checked.has(r.id)}
                 onClick={() => onSelect(r.id)}
               >
+                <td
+                  className="c-check"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggle(r.id, e.shiftKey);
+                  }}
+                >
+                  <input type="checkbox" aria-label={`Select ${r.name}`} checked={checked.has(r.id)} readOnly />
+                </td>
                 <td className="c-name">
                   <span className="name">{r.name}</span>
                   {r.flags.length > 0 && (
@@ -114,7 +153,6 @@ export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort,
                   {r.origin.label}
                   {r.origin.detail && <span className="sub"> {r.origin.detail}</span>}
                 </td>
-                <td className="c-jstack">{r.jstack && <JstackBadge j={r.jstack} bare />}</td>
                 <td className="c-uses num">
                   <Uses r={r} />
                 </td>
@@ -126,6 +164,7 @@ export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort,
           })}
           {shelved.map((s) => (
             <tr key={s.id} className="shelved" title={s.note}>
+              <td className="c-check" />
               <td className="c-name">
                 <span className="name">{s.name}</span>
               </td>
@@ -141,7 +180,6 @@ export function SkillTable({ rows, shelved, onRestore, selected, onSelect, sort,
               <td className="c-scope" />
               <td className="c-owner">skilltab shelf</td>
               <td className="c-origin" />
-              <td className="c-jstack" />
               <td className="c-uses num" />
               <td className="c-last">{ago(s.at)}</td>
             </tr>

@@ -16,7 +16,7 @@ function errorText(e: CoreError): string {
 const RESULT_LABEL = { done: "done", skipped: "already done", failed: "failed", notRun: "not run" } as const;
 
 /** The one confirm flow for every change. It plans, shows what will happen, and is the only caller of applyPlan. */
-export function ActionDialog({ request, onClose }: { request: ActionRequest; onClose: () => void }) {
+export function ActionDialog({ request, onClose, onApplied }: { request: ActionRequest; onClose: () => void; onApplied?: () => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: "planning" });
   const confirmRef = useRef<HTMLButtonElement | null>(null);
 
@@ -49,6 +49,7 @@ export function ActionDialog({ request, onClose }: { request: ActionRequest; onC
       .then((r) => {
         if (r.status === "error") return setPhase({ kind: "error", message: errorText(r.error) });
         if (r.data.outcome === "stale") return plan(r.data.reasons);
+        if (r.data.outcome === "applied") onApplied?.();
         setPhase({ kind: "done", plan: p, report: r.data });
       })
       .catch((e) => setPhase({ kind: "error", message: String(e) }));
@@ -123,7 +124,23 @@ function PlanBody({ plan }: { plan: PlanView }) {
         </section>
       )}
 
-      {plan.steps.length === 0 && plan.blockers.length === 0 && <p className="sub">Nothing to change. It is already in that state.</p>}
+      {plan.skipped.length > 0 && (
+        <section className="blockers" aria-label="Skipped">
+          <h3>Skipped, can't be deleted here</h3>
+          {plan.skipped.map((s, i) => (
+            <div key={i} className="blocker">
+              <p>
+                <b>{s.name}.</b> {s.reason}
+              </p>
+              <p className="remedy">
+                <b>Instead.</b> {s.remedy}
+              </p>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {plan.steps.length === 0 && plan.blockers.length === 0 && plan.skipped.length === 0 && <p className="sub">Nothing to change. It is already in that state.</p>}
 
       {plan.steps.length > 0 && (
         <section>

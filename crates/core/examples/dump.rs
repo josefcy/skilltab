@@ -15,7 +15,7 @@ fn main() {
     };
 
     let project_count = discover_projects(&home).len();
-    let env = Env { home: home.clone(), projects: Vec::new(), jstack_root: Some(home.join("jstack")) };
+    let env = Env { home: home.clone(), projects: Vec::new() };
 
     let started = Instant::now();
     let Ok(app) = Skilltab::open(env, std::env::temp_dir().join("skilltab-dump")) else { std::process::exit(1) };
@@ -184,7 +184,6 @@ fn scope_name(s: &Scope) -> &'static str {
 
 fn ownership_name(o: &Ownership) -> String {
     match o {
-        Ownership::JstackSync => "JstackSync",
         Ownership::SkillsCli => "SkillsCli",
         Ownership::PluginManager { .. } => "PluginManager",
         Ownership::ClaudeAiSync => "ClaudeAiSync",
@@ -197,7 +196,6 @@ fn ownership_name(o: &Ownership) -> String {
 
 fn origin_name(o: &Origin) -> String {
     match o {
-        Origin::JstackRepo { .. } => "JstackRepo",
         Origin::SkillsCli { .. } => "SkillsCli",
         Origin::Plugin { .. } => "Plugin",
         Origin::ClaudeAiSync { .. } => "ClaudeAiSync",
@@ -314,7 +312,6 @@ fn ownership_json(o: &Ownership) -> Value {
 
 fn origin_json(o: &Origin) -> Value {
     match o {
-        Origin::JstackRepo { skill } => json!({"jstackRepo": skill}),
         Origin::SkillsCli { source, source_url, git_ref, lock_hash } => {
             json!({"skillsCli": {"source": source, "sourceUrl": source_url, "ref": git_ref, "lockHash": lock_hash}})
         }

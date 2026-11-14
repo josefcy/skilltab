@@ -1,5 +1,5 @@
 //! Codex.
-//! Skills:   ~/.agents/skills/<name> (Codex loads it directly; jstack's sync treats it as Codex's skill dir),
+//! Skills:   ~/.agents/skills/<name> (Codex loads it directly),
 //!           ~/.codex/skills/<name>, ~/.codex/skills/.system/<name> (HarnessBuiltin),
 //!           ~/.codex/plugins/cache/<mkt>/<plugin>/<ver>/skills/<name>, named "<plugin>:<name>".
 //!           A plugin is declared in config.toml as [plugins."<p>@<mkt>"] enabled = bool. A plugin
@@ -521,8 +521,8 @@ mod tests {
         mklink_junction(&agents.join("architect"), &skill);
         mklink_junction(&agents.join("tdd"), &plain);
 
-        let env = Env { home: home.clone(), projects: vec![], jstack_root: None };
-        let snap = crate::scan::scan(&env, &[&Codex], &[], &crate::provenance::Provenance::load(&env, None), Vec::new(), 1);
+        let env = Env { home: home.clone(), projects: vec![] };
+        let snap = crate::scan::scan(&env, &[&Codex], &[], &crate::provenance::Provenance::load(&env), Vec::new(), 1);
 
         let id = snap.resolve(HarnessId::CODEX, &InvocationKey::Name("pstack:architect".into()));
         assert!(id.is_some(), "Codex lists the pstack junction as pstack:architect");
@@ -540,7 +540,7 @@ mod tests {
         fs::write(day.join("rollout-2026-11-01T10-00-00-abc.jsonl"), "").unwrap();
         fs::write(day.join("other.jsonl"), "").unwrap();
         fs::write(t.path().join(".codex").join("session_index.jsonl"), "").unwrap();
-        let env = Env { home: t.path().to_path_buf(), projects: vec![], jstack_root: None };
+        let env = Env { home: t.path().to_path_buf(), projects: vec![] };
         let sources = Codex.usage_sources(&env);
         assert_eq!(sources.len(), 1);
         assert!(sources[0].path.ends_with("rollout-2026-11-01T10-00-00-abc.jsonl"));
@@ -574,7 +574,7 @@ mod tests {
         )
         .unwrap();
 
-        let env = Env { home: home.to_path_buf(), projects: vec![], jstack_root: None };
+        let env = Env { home: home.to_path_buf(), projects: vec![] };
         let d = Codex.discover(&env, &[]);
 
         let mut names: Vec<_> = d.bundles.iter().map(|b| (b.name.as_str(), b.enabled)).collect();

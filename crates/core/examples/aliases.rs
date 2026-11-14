@@ -24,7 +24,7 @@ fn main() {
 fn run(data: &Path, home: &Path, confirm_all: bool) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(data)?;
     let mut index = UsageIndex::open(&data.join("usage.db"))?;
-    let mut env = Env { home: home.to_path_buf(), projects: Vec::new(), jstack_root: Some(home.join("jstack")) };
+    let mut env = Env { home: home.to_path_buf(), projects: Vec::new() };
     index.ingest_all(&env, &mut |_| {})?;
     env.projects = index.known_projects()?.into_iter().filter(|p| p != home).collect();
     let snap = Skilltab::open(env, data.to_path_buf()).map_err(|e| format!("scan failed: {e:?}"))?.snapshot();

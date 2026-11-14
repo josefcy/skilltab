@@ -6,7 +6,6 @@ mod aliases;
 mod fsutil;
 mod manage;
 mod harness;
-mod jstack;
 mod model;
 mod projects;
 mod provenance;
@@ -19,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
-use view::{ActionRequest, AliasPick, AliasSuggestionView, ApplyOutcomeKind, ApplyReport, CoreError, Inventory, JstackView, PlanView, RefreshReport, SkillDetail, Tallies};
+use view::{ActionRequest, AliasPick, AliasSuggestionView, ApplyOutcomeKind, ApplyReport, CoreError, Inventory, PlanView, RefreshReport, SkillDetail, Tallies};
 
 pub use projects::discover_projects;
 
@@ -31,15 +30,12 @@ pub use model::{
 pub use model::{HarnessId, HarnessInfo, LinkPath, ProjectRoot, RealDir, Tally, TrackingSince};
 pub use aliases::{apply as apply_aliases, key_from_wire, key_to_wire, suggest as suggest_aliases, Alias, AliasStore, RuleId, Suggestion};
 pub use harness::InvocationKind;
-pub use jstack::{fetch as jstack_fetch, report as jstack_report, Absence, DeclaredMissing, DeclaredSource, Drift, JstackAction, JstackCommand, JstackError, JstackReport, JstackRelation, NotInstalled, RepoSkill, RepoState, Upstream};
 pub use usage::{IngestProgress, IngestReport, UsageError, UsageIndex, UsagePoint};
 
 pub struct Env {
     pub home: PathBuf,
     /// Project roots to check beyond the ones found in transcripts.
     pub projects: Vec<PathBuf>,
-    /// The jstack clone. None means no skill is attributed to jstack.
-    pub jstack_root: Option<PathBuf>,
 }
 
 pub struct Skilltab {
@@ -59,15 +55,7 @@ pub struct Skilltab {
 struct Current {
     snapshot: Arc<Snapshot>,
     usage: Arc<Usage>,
-    /// None when there is no clone, or it cannot be read.
-    jstack: Option<Arc<JstackState>>,
     scan_ms: u32,
-}
-
-/// The clone as of the scan that made the snapshot, and its relations to that snapshot.
-struct JstackState {
-    repo: RepoState,
-    report: JstackReport,
 }
 
 #[derive(Default)]
@@ -114,7 +102,7 @@ impl Skilltab {
     /// Every row, bundle, problem and facet. Filtering is client-side.
     pub fn inventory(&self) -> Inventory {
         let c = self.read();
-        let mut inventory = view::inventory(&c.snapshot, &c.usage.tallies, &c.usage.tracking_since, c.jstack.as_ref().map(|j| &j.report), c.scan_ms);
+        let mut inventory = view::inventory(&c.snapshot, &c.usage.tallies, &c.usage.tracking_since, c.scan_ms);
         inventory.aliases = view::alias_views(&c.snapshot, &c.usage.aliases);
         inventory
     }
@@ -161,23 +149,9 @@ impl Skilltab {
         Ok(self.refresh())
     }
 
-    /// The jstack tab. None when there is no clone to read. Reads the state of the last refresh and runs no git.
-    pub fn jstack(&self) -> Option<JstackView> {
-        let c = self.read();
-        c.jstack.as_ref().map(|j| view::jstack_view(&c.snapshot, &j.repo, &j.report))
-    }
-
-    /// `git fetch` in the clone, then a rescan, so ahead and behind and every row's drift move.
-    /// A fetch changes only remote-tracking refs.
-    pub fn jstack_fetch(&self) -> Result<RefreshReport, CoreError> {
-        let root = self.env.jstack_root.as_deref().ok_or_else(|| CoreError::Invalid { message: "there is no jstack clone to fetch".to_owned() })?;
-        jstack::fetch(root).map_err(|e| CoreError::Io { message: e.to_string() })?;
-        Ok(self.refresh())
-    }
-
     pub fn skill(&self, id: &str) -> Result<SkillDetail, CoreError> {
         let c = self.read();
-        view::detail(&c.snapshot, id, &c.usage.tallies, &c.usage.tracking_since, c.jstack.as_ref().map(|j| &j.report))
+        view::detail(&c.snapshot, id, &c.usage.tallies, &c.usage.tracking_since)
     }
 
     /// Opens Explorer on one hop of one mount's chain (0 is the entry, the last is the real folder).
@@ -200,9 +174,8 @@ impl Skilltab {
     pub fn plan(&self, request: &ActionRequest) -> Result<PlanView, CoreError> {
         let c = self.read();
         let snap = c.snapshot;
-        let repo = c.jstack.as_ref().map(|j| &j.repo);
-        let action = view::parse_action(&snap, repo, request)?;
-        let plan = manage::plan(&snap, &lock(&self.shelf), repo, action);
+        let action = view::parse_action(&snap, request)?;
+        let plan = manage::plan(&snap, &lock(&self.shelf), action);
         let id = format!("{}-{}", snap.revision, self.next_plan.fetch_add(1, Ordering::Relaxed));
         let out = view::plan_view(&snap, id.clone(), &plan);
         let mut plans = lock(&self.plans);
@@ -256,20 +229,13 @@ fn build(env: &Env, data_dir: &Path, shelved: &[model::ShelfEntry], revision: u6
     let started = Instant::now();
     let snapshot = scan_disk(env, shelved, revision);
     let usage = load_usage(env, data_dir);
-    let jstack = env.jstack_root.as_deref().and_then(|root| match RepoState::load(root) {
-        Ok(repo) => Some(Arc::new(JstackState { report: jstack_report(&snapshot, &repo), repo })),
-        Err(e) => {
-            eprintln!("skilltab: jstack clone not read: {e}");
-            None
-        }
-    });
-    Current { snapshot: Arc::new(snapshot), usage: Arc::new(usage), jstack, scan_ms: started.elapsed().as_millis() as u32 }
+    Current { snapshot: Arc::new(snapshot), usage: Arc::new(usage), scan_ms: started.elapsed().as_millis() as u32 }
 }
 
 /// One scan of every harness root, with no usage. Shared by the facade and by tests that only need a snapshot.
 pub(crate) fn scan_disk(env: &Env, shelved: &[model::ShelfEntry], revision: u64) -> Snapshot {
     let projects = scan::project_roots(&project_candidates(env));
-    let provenance = provenance::Provenance::load(env, env.jstack_root.as_deref());
+    let provenance = provenance::Provenance::load(env);
     scan::scan(env, harness::registry(), &projects, &provenance, shelved.to_vec(), revision)
 }
 
@@ -323,7 +289,7 @@ mod tests {
     }
 
     fn open(home: &Path) -> Skilltab {
-        let env = Env { home: home.to_path_buf(), projects: Vec::new(), jstack_root: None };
+        let env = Env { home: home.to_path_buf(), projects: Vec::new() };
         Skilltab::open(env, home.join("data")).unwrap()
     }
 
@@ -334,14 +300,14 @@ mod tests {
         let app = open(tmp.path());
         let snap = app.snapshot();
 
-        let none = view::inventory(&snap, &Tallies::new(), &Default::default(), None, 0);
+        let none = view::inventory(&snap, &Tallies::new(), &Default::default(), 0);
         assert_eq!(none.rows.len(), 1);
         assert!(!none.rows[0].usage.tracked);
         assert!(!none.rows[0].usage.unused);
 
         let mut tracking = model::TrackingSince::new();
         tracking.insert(HarnessId::CLAUDE_CODE, chrono::Utc::now());
-        let tracked = view::inventory(&snap, &Tallies::new(), &tracking, None, 0);
+        let tracked = view::inventory(&snap, &Tallies::new(), &tracking, 0);
         assert!(tracked.rows[0].usage.tracked);
         assert!(tracked.rows[0].usage.unused);
         assert_eq!(tracked.tracking_since.len(), 1);
@@ -349,7 +315,7 @@ mod tests {
         let mut tallies = Tallies::new();
         let used = Tally { total: 4, last_30d: 2, last_used: Some(chrono::Utc::now()), by_kind: [0; 4] };
         tallies.insert((HarnessId::CLAUDE_CODE, InvocationKey::Name("tdd".into())), used);
-        let used = view::inventory(&snap, &tallies, &tracking, None, 0);
+        let used = view::inventory(&snap, &tallies, &tracking, 0);
         let u = &used.rows[0].usage;
         assert_eq!((u.total, u.last30d, u.unused), (4, 2, false));
         assert!(u.days_since_last_use.is_some());
@@ -395,7 +361,7 @@ mod tests {
         use super::super::*;
         use crate::manage::tests::{FakeOs, Home};
         use std::sync::Arc;
-        use view::{ActionRequest, ApplyOutcomeKind, BlockerKind, StepResultView};
+        use view::{ActionRequest, ApplyOutcomeKind, StepResultView};
 
         /// Shares the fake with the facade, so the test can read what it was asked to do.
         struct Shared(Arc<FakeOs>);
@@ -467,24 +433,6 @@ mod tests {
         }
 
         #[test]
-        fn a_jstack_synced_link_is_refused_with_the_exclude_remedy() {
-            let h = Home::new();
-            h.skill("jstack/skills/x", "x");
-            h.junction(".claude/skills/x", "jstack/skills/x");
-            std::fs::write(h.p(".jstack-links.txt"), format!("{}\n", h.p(".claude/skills/x").display())).unwrap();
-            let (app, _) = open(&h);
-            let mount = mount_id(&app, &h.p(".claude/skills/x"));
-
-            let plan = app.plan(&ActionRequest::RemoveMount { mount }).unwrap();
-            assert!(!plan.ready);
-            assert_eq!(plan.blockers.len(), 1);
-            assert!(matches!(plan.blockers[0].kind, BlockerKind::RecreatedBy));
-            assert!(plan.blockers[0].remedy.contains("Add x to jstack/exclude.txt"), "{}", plan.blockers[0].remedy);
-            assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Refused);
-            assert!(h.p(".claude/skills/x").exists());
-        }
-
-        #[test]
         fn bundle_disable_hands_the_runner_exactly_the_claude_command() {
             let h = Home::new();
             h.claude_plugin();
@@ -497,129 +445,54 @@ mod tests {
             assert_eq!(*os.ran.lock().unwrap(), vec!["claude plugin disable pstack@cursor-plugins"]);
         }
 
-        /// alpha is the clone's own folder reached through a junction, beta is a hand copy with other bytes,
-        /// and Codex is present with something else, so it lacks both repo skills.
-        fn jstack_home() -> Home {
+        fn bulk_ids(app: &Skilltab, names: &[&str]) -> Vec<String> {
+            let inv = app.inventory();
+            names.iter().map(|n| inv.rows.iter().find(|r| r.name == *n).unwrap_or_else(|| panic!("no row {n}")).id.clone()).collect()
+        }
+
+        #[test]
+        fn a_bulk_delete_names_the_count_lists_what_it_skips_and_recycles_each_folder_once() {
             let h = Home::new();
-            h.jstack_clone();
-            h.junction(".claude/skills/alpha", "jstack/skills/alpha");
-            h.skill(".claude/skills/beta", "beta");
-            h.skill(".agents/skills/other", "other");
-            h
-        }
-
-        fn row<'a>(inv: &'a Inventory, name: &str) -> &'a view::SkillRow {
-            inv.rows.iter().find(|r| r.name == name).unwrap_or_else(|| panic!("no row {name}"))
-        }
-
-        #[test]
-        fn the_jstack_relation_lands_on_the_owned_and_copied_rows_and_nowhere_else() {
-            let h = jstack_home();
-            let (app, _) = open(&h);
-            let inv = app.inventory();
-
-            let alpha = row(&inv, "alpha").jstack.as_ref().expect("alpha is owned");
-            assert_eq!((alpha.kind, alpha.drift, alpha.drifted), (view::JstackKind::Owned, view::DriftKind::Behind, true));
-            assert_eq!(alpha.drift_label.as_deref(), Some("behind 1"));
-            let beta = row(&inv, "beta").jstack.as_ref().expect("beta is a copy");
-            assert_eq!((beta.kind, beta.drift), (view::JstackKind::CopyOf, view::DriftKind::ContentDiffers));
-            assert!(row(&inv, "other").jstack.is_none());
-
-            let count = |id: &str| inv.facets.jstack.iter().find(|f| f.id == id).map(|f| f.count);
-            assert_eq!((count("owned"), count("copyOf"), count("declared"), count("drifted")), (Some(1), Some(1), Some(0), Some(2)));
-            assert_eq!(app.skill(&row(&inv, "alpha").id).unwrap().row.jstack.map(|j| j.kind), Some(view::JstackKind::Owned));
-
-            let none = Skilltab::open(Env { jstack_root: None, ..h.env() }, h.p(".other-data")).unwrap().inventory();
-            assert!(none.facets.jstack.is_empty());
-            assert!(none.rows.iter().all(|r| r.jstack.is_none()));
-        }
-
-        #[test]
-        fn the_jstack_view_reports_the_clone_what_is_missing_and_what_is_declared() {
-            let h = jstack_home();
-            let (app, _) = open(&h);
-            let j = app.jstack().expect("there is a clone");
-
-            let up = j.repo.upstream.as_ref().expect("the clone tracks origin");
-            assert_eq!((up.name.as_str(), up.ahead, up.behind), ("origin/main", 0, 1));
-            assert_eq!(j.repo.branch.as_deref(), Some("main"));
-            assert_eq!(j.repo.head.len(), 7);
-            assert!(j.repo.can_sync && j.repo.dirty.is_empty() && j.repo.fetched_at.is_some());
-            assert_eq!(j.repo.skill_count, 2);
-
-            assert_eq!(j.relations.iter().map(|r| (r.name.as_str(), r.relation.kind)).collect::<Vec<_>>(), [("alpha", view::JstackKind::Owned), ("beta", view::JstackKind::CopyOf)]);
-            let missing: Vec<(&str, &str, view::AbsenceKind)> = j.not_installed.iter().map(|n| (n.harness.id.as_str(), n.skill.as_str(), n.reason)).collect();
-            assert_eq!(missing, [("codex", "alpha", view::AbsenceKind::Absent), ("codex", "beta", view::AbsenceKind::Absent)]);
-            assert_eq!(j.declared.len(), 1);
-            assert_eq!((j.declared[0].source.as_str(), j.declared[0].missing.as_slice()), ("owner/pack", ["one".to_owned(), "two".to_owned()].as_slice()));
-        }
-
-        #[test]
-        fn jstack_plans_go_through_the_facade_and_only_declared_names_reach_a_command_line() {
-            let h = jstack_home();
+            h.skill(".claude/skills/a", "a");
+            h.skill(".claude/skills/c", "c");
+            h.claude_plugin();
             let (app, os) = open(&h);
+            let skills = bulk_ids(&app, &["a", "architect", "c", "a"]);
 
-            let sync = app.plan(&ActionRequest::JstackSync).unwrap();
-            assert!(sync.ready && sync.confirm == "Run sync");
-            assert!(sync.effects.iter().any(|e| e.text.starts_with("Updates your jstack clone (git pull) first")), "{:?}", sync.effects.iter().map(|e| &e.text).collect::<Vec<_>>());
-            assert_eq!(sync.steps.len(), 1);
-            assert!(sync.steps[0].detail.starts_with("powershell -NoProfile -ExecutionPolicy Bypass -File "));
+            let plan = app.plan(&ActionRequest::DeleteBodies { skills }).unwrap();
+            assert_eq!((plan.title.as_str(), plan.confirm.as_str()), ("Delete 2 skills everywhere", "Delete 2 skills"));
+            assert!(plan.ready && plan.blockers.is_empty());
+            assert_eq!(plan.steps.len(), 2, "the repeated id is one skill");
+            let skipped: Vec<(&str, bool)> = plan.skipped.iter().map(|s| (s.name.as_str(), s.reason.contains("plugin"))).collect();
+            assert_eq!(skipped, [("architect", true)]);
+            assert!(plan.skipped[0].remedy.contains("Disable plugin"), "{}", plan.skipped[0].remedy);
 
-            let install = app.plan(&ActionRequest::JstackInstallDeclared { source: "owner/pack".into(), skills: vec!["two".into()] }).unwrap();
-            assert_eq!(install.title, "Install 1 skill from owner/pack");
-            assert!(install.steps[0].detail.ends_with("--skill two"));
-            for (source, skills) in [("elsewhere", vec!["two"]), ("owner/pack", vec!["two", "rm -rf"])] {
-                let bad = ActionRequest::JstackInstallDeclared { source: source.into(), skills: skills.into_iter().map(str::to_owned).collect() };
-                assert!(matches!(app.plan(&bad), Err(CoreError::UnknownId { .. })), "{source}");
-            }
-            assert!(os.ran.lock().unwrap().is_empty(), "planning runs nothing");
-
-            let report = app.apply(&app.plan(&ActionRequest::JstackPull).unwrap().id).unwrap();
+            let report = app.apply(&plan.id).unwrap();
             assert_eq!(report.outcome, ApplyOutcomeKind::Applied);
-            assert_eq!(*os.ran.lock().unwrap(), vec!["git pull --ff-only"]);
+            assert_eq!(os.recycled.lock().unwrap().len(), 2);
+            let left: Vec<String> = app.inventory().rows.into_iter().map(|r| r.name).collect();
+            assert_eq!(left, ["architect"]);
+
+            let bad = ActionRequest::DeleteBodies { skills: vec!["not-a-folder-id".into()] };
+            assert!(matches!(app.plan(&bad), Err(CoreError::UnknownId { .. })));
         }
 
         #[test]
-        fn no_clone_means_no_jstack_view_an_unsupported_plan_and_nothing_to_fetch() {
-            let tmp = tempfile::tempdir().unwrap();
-            let app = super::open(tmp.path());
-            assert!(app.jstack().is_none());
-            let plan = app.plan(&ActionRequest::JstackPull).unwrap();
-            assert!(!plan.ready);
-            assert!(matches!(plan.blockers[0].kind, BlockerKind::Unsupported));
-            assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Refused);
-            assert!(matches!(app.jstack_fetch(), Err(CoreError::Invalid { .. })));
-        }
+        fn a_bulk_delete_with_nothing_deletable_is_not_ready() {
+            let h = Home::new();
+            h.claude_plugin();
+            let (app, _) = open(&h);
 
-        #[test]
-        fn a_real_pull_brings_the_clone_level_and_the_new_content_shows() {
-            let h = jstack_home();
-            let app = Skilltab::open(h.env(), h.p(".skilltab-data")).unwrap();
-            let read = || std::fs::read_to_string(h.p("jstack/skills/alpha/SKILL.md")).unwrap();
-            assert!(read().contains("repo body of alpha"));
+            let empty = app.plan(&ActionRequest::DeleteBodies { skills: Vec::new() }).unwrap();
+            assert!(!empty.ready && empty.skipped.is_empty() && empty.title == "Delete skills everywhere");
 
-            let report = app.apply(&app.plan(&ActionRequest::JstackPull).unwrap().id).unwrap();
-            assert_eq!(report.outcome, ApplyOutcomeKind::Applied, "{:?}", report.output);
+            let all = app.plan(&ActionRequest::DeleteBodies { skills: bulk_ids(&app, &["architect"]) }).unwrap();
+            assert!(!all.ready && all.steps.is_empty() && all.blockers.is_empty());
+            assert_eq!(all.skipped.len(), 1);
+            assert_eq!(app.apply(&all.id).unwrap().steps.len(), 0);
 
-            assert!(read().contains("upstream moves"));
-            let j = app.jstack().unwrap();
-            assert_eq!(j.repo.upstream.map(|u| (u.ahead, u.behind)), Some((0, 0)));
-            let inv = app.inventory();
-            assert_eq!(row(&inv, "alpha").jstack.as_ref().map(|j| j.drift), Some(view::DriftKind::InSync));
-            assert_eq!(row(&inv, "beta").jstack.as_ref().map(|j| j.drift), Some(view::DriftKind::ContentDiffers), "a copy stays a copy");
-        }
-
-        #[test]
-        fn fetch_moves_behind_and_the_revision_without_touching_the_working_tree() {
-            let h = jstack_home();
-            let app = Skilltab::open(h.env(), h.p(".skilltab-data")).unwrap();
-            h.upstream_commit("a second upstream commit");
-            let before = app.inventory().revision;
-
-            assert_eq!(app.jstack_fetch().unwrap().revision, before + 1);
-            assert_eq!(app.jstack().unwrap().repo.upstream.map(|u| u.behind), Some(2));
-            assert_eq!(row(&app.inventory(), "alpha").jstack.as_ref().and_then(|j| j.drift_label.clone()).as_deref(), Some("behind 2"));
-            assert!(std::fs::read_to_string(h.p("jstack/skills/alpha/SKILL.md")).unwrap().contains("repo body of alpha"));
+            let single = app.plan(&ActionRequest::DeleteBody { skill: bulk_ids(&app, &["architect"]).remove(0) }).unwrap();
+            assert!(single.skipped.is_empty() && !single.blockers.is_empty(), "a single delete still reports a blocker");
         }
 
         #[test]
