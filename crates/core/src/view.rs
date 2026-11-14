@@ -6,7 +6,7 @@
 //! so the UI renders what it is sent and filters on these fields without domain rules of its own.
 
 use crate::harness::BundleOp;
-use crate::manage::{self, ApplyOutcome, Blocker, Effect, ManageAction, Note, Plan, Skipped, Step, StepResult, Was, TRASH_NAME};
+use crate::manage::{self, ApplyOutcome, Blocker, Effect, ManageAction, Note, Os, Plan, Skipped, Step, StepResult, Was, TRASH_NAME};
 use crate::model::*;
 use crate::{setup, Env};
 use serde::{Deserialize, Serialize};
@@ -928,6 +928,8 @@ pub enum ActionRequest {
     /// Write this machine's setup into a folder. The folder is the one path the UI sends. Core parses it once
     /// into a `SetupDir`, and a leading `~` is the home folder.
     ExportSetup { folder: String },
+    /// Rebuild this machine's setup from a setup folder, the same kind of path as for an export.
+    RestoreSetup { folder: String },
 }
 
 #[derive(Serialize, Type)]
@@ -1065,7 +1067,7 @@ pub enum StepResultView {
 
 /// Resolves the request's ids against the snapshot, and reads the setup folder it names. An id the snapshot does
 /// not know, or a folder that is not usable, is an error. This is the one place a request becomes a `ManageAction`.
-pub(crate) fn parse_action(snap: &Snapshot, env: &Env, req: &ActionRequest) -> Result<ManageAction, CoreError> {
+pub(crate) fn parse_action(snap: &Snapshot, env: &Env, os: &dyn Os, req: &ActionRequest) -> Result<ManageAction, CoreError> {
     let unknown = |id: &str| CoreError::UnknownId { id: id.to_owned() };
     let mount = |id: &str| snap.mounts.keys().find(|m| m.as_str() == id).cloned().ok_or_else(|| unknown(id));
     let bundle = |id: &str| snap.bundles.keys().find(|b| b.as_str() == id).cloned().ok_or_else(|| unknown(id));
@@ -1092,6 +1094,9 @@ pub(crate) fn parse_action(snap: &Snapshot, env: &Env, req: &ActionRequest) -> R
         ActionRequest::BundleDisable { bundle: id } => ManageAction::Bundle(bundle(id)?, BundleOp::Disable),
         ActionRequest::ExportSetup { folder } => {
             ManageAction::ExportSetup(Arc::new(setup::read_export(env, setup::SetupDir::parse(env, folder)?)))
+        }
+        ActionRequest::RestoreSetup { folder } => {
+            ManageAction::RestoreSetup(Arc::new(setup::read_restore(env, os, setup::SetupDir::parse(env, folder)?)?))
         }
     })
 }
@@ -1218,6 +1223,9 @@ impl Cx<'_> {
                 (format!("{verb} plugin {}", self.bundle_name(b)), format!("{verb} plugin"))
             }
             ManageAction::ExportSetup(input) => (format!("Export setup to {}", path_str(input.dir.as_path())), "Export setup".into()),
+            ManageAction::RestoreSetup(input) => {
+                (format!("Restore setup from {}", path_str(input.dir.as_path())), "Restore setup".into())
+            }
         }
     }
 

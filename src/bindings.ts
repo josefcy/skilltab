@@ -34,7 +34,9 @@ export type ActionRequest = { kind: "removeMount"; mount: string } | { kind: "de
  *  Write this machine's setup into a folder. The folder is the one path the UI sends. Core parses it once
  *  into a `SetupDir`, and a leading `~` is the home folder.
  */
-{ kind: "exportSetup"; folder: string };
+{ kind: "exportSetup"; folder: string } | 
+/**  Rebuild this machine's setup from a setup folder, the same kind of path as for an export. */
+{ kind: "restoreSetup"; folder: string };
 
 /**  One suggestion to confirm, as `confirm_aliases` takes it. The strings are the wire forms from `AliasSuggestionView`. */
 export type AliasPick = {

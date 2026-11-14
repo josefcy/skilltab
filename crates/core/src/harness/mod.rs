@@ -82,9 +82,7 @@ pub trait Harness: Sync {
 // ---------------------------------------------------------------- setup
 
 /// Static facts about one harness's part in a setup backup. Plain data, so a test can check the whole registry.
-/// Restore reads `skills_dir`, `skills_cli_agent`, `tools` and `sign_in`.
 #[derive(Default)]
-#[allow(dead_code)]
 pub struct HarnessSetup {
     /// The harness's own folder under the home folder, such as ".claude". Its backup folder is the same name
     /// without the dot.

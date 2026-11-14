@@ -6,6 +6,7 @@ use crate::manage::Shelf;
 use crate::model::Snapshot;
 use crate::provenance::Provenance;
 use crate::Env;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -35,6 +36,29 @@ pub(crate) fn copy_tree(from: &Path, to: &Path) {
             fs::copy(item.path(), target).unwrap();
         }
     }
+}
+
+/// Every entry under `root` without following links: a file as its text, a folder as an empty value under a key that
+/// ends in `/`, and a link as `-> target`. Two listings are equal only when nothing under `root` changed.
+pub(crate) fn listing(root: &Path) -> BTreeMap<String, String> {
+    fn walk(dir: &Path, rel: &str, out: &mut BTreeMap<String, String>) {
+        for item in fs::read_dir(dir).unwrap() {
+            let path = item.unwrap().path();
+            let name = format!("{rel}{}", path.file_name().unwrap().to_string_lossy());
+            let kind = fs::symlink_metadata(&path).unwrap().file_type();
+            if kind.is_symlink() {
+                out.insert(name, format!("-> {}", fs::read_link(&path).unwrap().display()));
+            } else if kind.is_dir() {
+                out.insert(format!("{name}/"), String::new());
+                walk(&path, &format!("{name}/"), out);
+            } else {
+                out.insert(name, String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(root, "", &mut out);
+    out
 }
 
 pub(crate) struct Home {

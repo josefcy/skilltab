@@ -177,7 +177,7 @@ impl Skilltab {
     pub fn plan(&self, request: &ActionRequest) -> Result<PlanView, CoreError> {
         let c = self.read();
         let snap = c.snapshot;
-        let action = view::parse_action(&snap, &self.env, request)?;
+        let action = view::parse_action(&snap, &self.env, self.os.as_ref(), request)?;
         let plan = manage::plan(&snap, &lock(&self.shelf), action);
         let id = format!("{}-{}", snap.revision, self.next_plan.fetch_add(1, Ordering::Relaxed));
         let out = view::plan_view(&snap, id.clone(), &plan);

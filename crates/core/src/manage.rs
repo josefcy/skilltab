@@ -18,7 +18,7 @@ use win as sys;
 use crate::harness::{registry, BundleOp, BundleRef, ExternalCommand};
 use crate::model::*;
 use crate::scan::{content_hash, still_link_to};
-use crate::setup::ExportInput;
+use crate::setup::{ExportInput, RestoreInput};
 use sha1::{Digest, Sha1};
 use std::ffi::OsString;
 use std::io::{self, Write as _};
@@ -52,6 +52,8 @@ pub(crate) enum ManageAction {
     /// Write this machine's setup into the setup folder: `manifest.json` and the allowlisted config files.
     /// Holds what `setup::read_export` read, so planning stays pure.
     ExportSetup(Arc<ExportInput>),
+    /// Rebuild this machine's setup from the setup folder. Holds what `setup::read_restore` read, so planning stays pure.
+    RestoreSetup(Arc<RestoreInput>),
 }
 
 pub(crate) struct Plan {
@@ -80,7 +82,6 @@ pub(crate) enum NoteKind {
     /// Left as it is, or left out, and the user should know.
     Attention,
     /// Something only the user can do after the plan runs. Export has none. Restore's sign-in lines are these.
-    #[allow(dead_code)]
     Manual,
 }
 
@@ -150,6 +151,7 @@ pub(crate) fn plan(snap: &Snapshot, shelf: &Shelf, action: ManageAction) -> Plan
         ManageAction::Restore(id) => restore(snap, id, &mut p),
         ManageAction::Bundle(b, op) => bundle(snap, b, *op, &mut p),
         ManageAction::ExportSetup(input) => setup::plan_export(input, &mut p),
+        ManageAction::RestoreSetup(input) => setup::plan_restore(input, &mut p),
     }
     p
 }
@@ -607,5 +609,9 @@ fn moved_error(e: io::Error, to: &Path) -> io::Error {
     }
 }
 
+#[cfg(test)]
+mod fake_tools;
+#[cfg(test)]
+mod restore_tests;
 #[cfg(test)]
 pub(crate) mod tests;

@@ -11,11 +11,31 @@ pub(crate) struct FakeOs {
     pub ran: Mutex<Vec<String>>,
     /// The programs `find_tool` finds.
     pub tools: BTreeSet<String>,
+    /// A command line that starts with this fails instead of running.
+    pub fail_on: Option<String>,
 }
 
 impl FakeOs {
     pub(crate) fn with_tools(tools: &[&str]) -> FakeOs {
         FakeOs { tools: tools.iter().map(|t| (*t).to_owned()).collect(), ..FakeOs::default() }
+    }
+
+    pub(crate) fn failing_on(mut self, prefix: &str) -> FakeOs {
+        self.fail_on = Some(prefix.to_owned());
+        self
+    }
+}
+
+/// Lets a test keep a handle on the fake after the facade owns a box of it.
+impl Os for std::sync::Arc<FakeOs> {
+    fn recycle(&self, dir: &RealDir) -> io::Result<()> {
+        (**self).recycle(dir)
+    }
+    fn run(&self, command: &ExternalCommand) -> io::Result<String> {
+        (**self).run(command)
+    }
+    fn find_tool(&self, program: &str) -> bool {
+        (**self).find_tool(program)
     }
 }
 
@@ -28,6 +48,10 @@ impl Os for FakeOs {
     }
     fn run(&self, command: &ExternalCommand) -> io::Result<String> {
         self.ran.lock().unwrap().push(command.display());
+        if self.fail_on.as_ref().is_some_and(|prefix| command.display().starts_with(prefix)) {
+            return Err(io::Error::other(format!("{} exited with 1: boom", command.display())));
+        }
+        super::fake_tools::act_like_the_real_tool(command)?;
         Ok("ok".into())
     }
     fn find_tool(&self, program: &str) -> bool {
