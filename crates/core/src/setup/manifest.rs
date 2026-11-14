@@ -74,8 +74,9 @@ impl SetupManifest {
         Ok(m)
     }
 
-    /// The bytes `backup.ps1` writes: two-space layout, one entry per line, `[]` for an empty list, LF line
-    /// ends, a final LF and no BOM. Strings escape only `\` and `"`, as its `Q` function does.
+    /// The bytes `backup.ps1` writes: two-space layout, one entry per line, LF line ends, a final LF and no BOM.
+    /// An empty list is `[]`, except claudePlugins and ownSkills, which hold a blank line.
+    /// Strings escape only `\` and `"`, as its `Q` function does.
     pub(crate) fn render(&self) -> String {
         let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
         let marketplaces: Vec<String> = self
@@ -100,20 +101,33 @@ impl SetupManifest {
             .collect();
         let own: Vec<String> = self.own_skills.iter().map(|s| format!("    {}", q(s.as_str()))).collect();
 
-        let block = |key: &str, lines: &[String], last: bool| {
+        // The script feeds claudePlugins and ownSkills through `ForEach-Object`, so an empty list reaches its block
+        // function as one null line and prints a blank line between the brackets. The other two print `[]`.
+        let block = |key: &str, lines: &[String], quirk: bool, last: bool| {
             let comma = if last { "" } else { "," };
-            if lines.is_empty() {
-                format!("  \"{key}\": []{comma}")
-            } else {
-                format!("  \"{key}\": [\n{}\n  ]{comma}", lines.join(",\n"))
+            match (lines.is_empty(), quirk) {
+                (false, _) => format!("  \"{key}\": [
+{}
+  ]{comma}", lines.join(",
+")),
+                (true, true) => format!("  \"{key}\": [
+
+  ]{comma}"),
+                (true, false) => format!("  \"{key}\": []{comma}"),
             }
         };
         format!(
-            "{{\n{}\n{}\n{}\n{}\n}}\n",
-            block("marketplaces", &marketplaces, false),
-            block("claudePlugins", &plugins, false),
-            block("skillSources", &sources, false),
-            block("ownSkills", &own, true),
+            "{{
+{}
+{}
+{}
+{}
+}}
+",
+            block("marketplaces", &marketplaces, false, false),
+            block("claudePlugins", &plugins, true, false),
+            block("skillSources", &sources, false, false),
+            block("ownSkills", &own, true, true),
         )
     }
 }
@@ -123,12 +137,17 @@ mod tests {
     use super::*;
 
     const GOLDEN: &str = include_str!("../../tests/fixtures/setup/expected/manifest.json");
+    const GOLDEN_EMPTY_LISTS: &str = include_str!("../../tests/fixtures/setup/empty-lists/expected/manifest.json");
 
     #[test]
     fn the_backup_ps1_output_parses_and_renders_back_to_the_same_bytes() {
         let m = SetupManifest::parse(GOLDEN).unwrap();
         assert_eq!(m.marketplaces.len(), 3);
         assert_eq!(m.render(), GOLDEN);
+
+        let empty = SetupManifest::parse(GOLDEN_EMPTY_LISTS).unwrap();
+        assert_eq!((empty.marketplaces.len(), empty.plugins.len(), empty.skill_sources.len(), empty.own_skills.len()), (1, 0, 0, 0));
+        assert_eq!(empty.render(), GOLDEN_EMPTY_LISTS);
     }
 
     #[test]
@@ -143,11 +162,66 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_manifest_renders_empty_lists_and_round_trips() {
-        let empty = "{\n  \"marketplaces\": [],\n  \"claudePlugins\": [],\n  \"skillSources\": [],\n  \"ownSkills\": []\n}\n";
+    fn an_empty_manifest_renders_the_empty_lists_as_backup_ps1_does_and_round_trips() {
+        let empty = "{
+  \"marketplaces\": [],
+  \"claudePlugins\": [
+
+  ],
+  \"skillSources\": [],
+  \"ownSkills\": [
+
+  ]
+}
+";
         assert_eq!(SetupManifest::default().render(), empty);
         assert_eq!(SetupManifest::parse(empty).unwrap(), SetupManifest::default());
+        let tidy = "{
+  \"marketplaces\": [],
+  \"claudePlugins\": [],
+  \"skillSources\": [],
+  \"ownSkills\": []
+}
+";
+        assert_eq!(SetupManifest::parse(tidy).unwrap(), SetupManifest::default());
         assert_eq!(SetupManifest::parse("{}").unwrap(), SetupManifest::default());
+    }
+
+    #[test]
+    fn each_list_is_empty_in_the_way_backup_ps1_writes_it_whatever_the_others_hold() {
+        let all = SetupManifest::parse(GOLDEN).unwrap();
+        let without = |plugins: bool, own: bool| {
+            let mut m = all.clone();
+            if !plugins {
+                m.plugins.clear();
+            }
+            if !own {
+                m.own_skills.clear();
+            }
+            m.render()
+        };
+        assert_eq!(without(true, true), GOLDEN);
+        let no_plugins = without(false, true);
+        assert!(no_plugins.contains("  \"claudePlugins\": [
+
+  ],
+  \"skillSources\": [
+"), "{no_plugins}");
+        assert!(no_plugins.contains("  \"ownSkills\": [
+    \"Own-A\",
+    \"own-b\"
+  ]
+}
+"), "{no_plugins}");
+        let no_own = without(true, false);
+        assert!(no_own.contains("  \"claudePlugins\": [
+    \"plug-a@zeta-market\",
+"), "{no_own}");
+        assert!(no_own.ends_with("  \"ownSkills\": [
+
+  ]
+}
+"), "{no_own}");
     }
 
     #[test]

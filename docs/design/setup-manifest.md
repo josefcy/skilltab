@@ -26,6 +26,14 @@ JSON with four lists. A missing list reads as empty, and unknown keys are ignore
 
 Export sorts every list and writes two-space indentation, one entry per line, LF line ends and a final newline. Running Export twice gives the same bytes, so a second run has nothing to change.
 
+An empty `marketplaces` or `skillSources` is written as `[]`. An empty `claudePlugins` or `ownSkills` is written as the brackets with one blank line between them. That is odd, and it is what `backup.ps1` writes, because the script passes those two lists through `ForEach-Object`, which hands an empty list on as one null line. Export copies it so a manifest from either tool is the same bytes. Reading accepts both forms.
+
+```json
+  "claudePlugins": [
+
+  ],
+```
+
 ```json
 {
   "marketplaces": [

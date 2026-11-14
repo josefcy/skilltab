@@ -578,6 +578,21 @@ mod tests {
         }
 
         #[test]
+        fn export_with_no_plugins_and_no_own_skills_writes_the_bytes_backup_ps1_wrote() {
+            let h = Home::new();
+            crate::testutil::copy_tree(&fixture("empty-lists/home"), &h.root);
+            std::fs::create_dir_all(h.p("repo")).unwrap();
+            let (app, _) = open(&h);
+
+            let plan = app.plan(&export_request(&h)).unwrap();
+            assert!(plan.ready, "{:?}", plan.blockers.iter().map(|b| &b.reason).collect::<Vec<_>>());
+            assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Applied);
+            assert_eq!(std::fs::read(h.p("repo/manifest.json")).unwrap(), std::fs::read(fixture("empty-lists/expected/manifest.json")).unwrap());
+            assert_eq!(tree(&h.p("repo/config")), tree(&fixture("empty-lists/expected/config")));
+            assert!(app.plan(&export_request(&h)).unwrap().steps.is_empty());
+        }
+
+        #[test]
         fn export_takes_a_home_relative_folder_and_refuses_one_that_is_not_a_full_path() {
             let h = export_home();
             let (app, _) = open(&h);
