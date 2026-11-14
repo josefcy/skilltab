@@ -325,3 +325,123 @@ fn shelf_survives_a_reopen_and_refuses_a_corrupt_file() {
     fs::write(h.p(".skilltab-data/shelf.json"), "{not json").unwrap();
     assert!(Shelf::open(&h.p(".skilltab-data")).is_err());
 }
+
+/// Real folders a, b and c. b is also reached by a Claude junction. `keep` is not part of any selection.
+fn bulk_home() -> Home {
+    let h = Home::new();
+    h.skill(".claude/skills/a", "a");
+    h.skill(".agents/skills/b", "b");
+    h.junction(".claude/skills/b", ".agents/skills/b");
+    h.skill(".claude/skills/c", "c");
+    h.skill(".claude/skills/keep", "keep");
+    h
+}
+
+fn body_of(snap: &Snapshot, harness: HarnessId, entry: &Path) -> SkillId {
+    mount(snap, harness, entry).body.clone()
+}
+
+#[test]
+fn a_bulk_delete_plans_every_selected_skill_as_one_change() {
+    let h = bulk_home();
+    let shelf = h.shelf();
+    let snap = h.scan(&shelf, 1);
+    let ids = vec![
+        body_of(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/a")),
+        body_of(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/b")),
+        body_of(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/c")),
+    ];
+
+    let p = plan(&snap, &shelf, ManageAction::DeleteBodies(ids));
+    assert!(p.blockers.is_empty() && p.skipped.is_empty(), "{:?}", p.blockers);
+    let kinds: Vec<&str> = p.steps.iter().map(|s| if matches!(s, Step::RemoveLink { .. }) { "link" } else { "recycle" }).collect();
+    assert_eq!(kinds, ["recycle", "link", "recycle", "recycle"], "{:?}", p.steps);
+    assert!(p.effects.contains(&Effect::BodyRecycled { dir: h.p(".agents/skills/b") }));
+}
+
+#[test]
+fn a_skill_that_cannot_be_deleted_is_skipped_and_the_rest_still_go() {
+    let h = bulk_home();
+    h.claude_plugin();
+    let mut shelf = h.shelf();
+    let snap = h.scan(&shelf, 1);
+    let plugin_skill = snap.bodies.values().find(|b| b.manifest.name == "architect").unwrap();
+    let Origin::Plugin { bundle } = &plugin_skill.origin else { panic!("{:?}", plugin_skill.origin) };
+    let ids = vec![
+        body_of(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/a")),
+        plugin_skill.id.clone(),
+        body_of(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/c")),
+    ];
+
+    let p = plan(&snap, &shelf, ManageAction::DeleteBodies(ids));
+    assert!(p.blockers.is_empty(), "a skipped skill is not a blocker for the plan");
+    assert_eq!(p.skipped.len(), 1);
+    assert_eq!(p.skipped[0].skill, plugin_skill.id);
+    assert!(p.skipped[0].blockers.contains(&Blocker::PartOfBundle { bundle: bundle.clone() }));
+    assert_eq!(p.steps.len(), 2, "only a and c: {:?}", p.steps);
+
+    let os = FakeOs::default();
+    assert_eq!(results(apply(&p, &mut shelf, &os)), vec![StepResult::Done, StepResult::Done]);
+    assert!(!h.p(".claude/skills/a").exists() && !h.p(".claude/skills/c").exists());
+    assert!(plugin_skill.dir.as_path().is_dir(), "the plugin's folder is untouched");
+    assert!(h.p(".claude/skills/keep").is_dir());
+}
+
+#[test]
+fn an_id_that_vanished_is_skipped_as_no_longer_installed() {
+    let h = bulk_home();
+    let shelf = h.shelf();
+    let before = h.scan(&shelf, 1);
+    let gone = body_of(&before, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/c"));
+    let a = body_of(&before, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/a"));
+    fs::remove_dir_all(h.p(".claude/skills/c")).unwrap();
+    let snap = h.scan(&shelf, 2);
+
+    let p = plan(&snap, &shelf, ManageAction::DeleteBodies(vec![gone.clone(), a]));
+    assert!(p.blockers.is_empty());
+    assert_eq!(p.skipped.len(), 1);
+    assert_eq!(p.skipped[0].skill, gone);
+    assert!(matches!(p.skipped[0].blockers.as_slice(), [Blocker::Unsupported { why, .. }] if why.contains("no longer installed")));
+    assert!(matches!(p.steps.as_slice(), [Step::Recycle { .. }]));
+}
+
+#[test]
+fn an_empty_or_fully_skipped_selection_has_nothing_to_apply() {
+    let h = Home::new();
+    h.claude_plugin();
+    let mut shelf = h.shelf();
+    let snap = h.scan(&shelf, 1);
+    let plugin_skill = snap.bodies.keys().next().unwrap().clone();
+
+    let empty = plan(&snap, &shelf, ManageAction::DeleteBodies(Vec::new()));
+    assert!(empty.steps.is_empty() && empty.skipped.is_empty() && empty.blockers.is_empty());
+
+    let all_skipped = plan(&snap, &shelf, ManageAction::DeleteBodies(vec![plugin_skill]));
+    assert!(all_skipped.steps.is_empty() && all_skipped.blockers.is_empty());
+    assert_eq!(all_skipped.skipped.len(), 1);
+    let os = FakeOs::default();
+    assert_eq!(results(apply(&all_skipped, &mut shelf, &os)), Vec::<StepResult>::new());
+    assert!(os.recycled.lock().unwrap().is_empty());
+}
+
+#[test]
+fn applying_a_bulk_delete_recycles_real_folders_only_and_leaves_what_it_did_not_select() {
+    let h = bulk_home();
+    let mut shelf = h.shelf();
+    let snap = h.scan(&shelf, 1);
+    let ids = vec![
+        body_of(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/b")),
+        body_of(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/c")),
+    ];
+    let p = plan(&snap, &shelf, ManageAction::DeleteBodies(ids));
+
+    let os = FakeOs::default();
+    assert!(results(apply(&p, &mut shelf, &os)).iter().all(|r| *r == StepResult::Done));
+
+    let mut recycled = os.recycled.lock().unwrap().clone();
+    recycled.sort();
+    assert_eq!(recycled, vec![h.p(".agents/skills/b"), h.p(".claude/skills/c")], "the junction at .claude/skills/b is unlinked, never recycled");
+    assert!(!h.p(".claude/skills/b").exists(), "the link is gone");
+    assert!(h.p(".claude/skills/a").is_dir() && h.p(".claude/skills/keep").is_dir());
+    assert!(shelf.entries().is_empty(), "a deleted skill is not shelved");
+}

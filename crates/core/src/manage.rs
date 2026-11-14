@@ -23,6 +23,9 @@ pub(crate) enum ManageAction {
     RemoveMount(MountId),
     /// Remove every mount's link, then send the real folder to the Recycle Bin.
     DeleteBody(SkillId),
+    /// `DeleteBody` for several skills in one plan. A skill that cannot be deleted is skipped with its reasons
+    /// and does not block the others.
+    DeleteBodies(Vec<SkillId>),
     /// Shelve one mount: remove its link, or move its real folder into the shelf.
     Disable(MountId),
     Restore(ShelfId),
@@ -34,6 +37,13 @@ pub(crate) struct Plan {
     pub action: ManageAction,
     pub steps: Vec<Step>,
     pub effects: Vec<Effect>,
+    pub blockers: Vec<Blocker>,
+    /// Only a bulk delete fills this. Each skill here contributes no steps.
+    pub skipped: Vec<Skipped>,
+}
+
+pub(crate) struct Skipped {
+    pub skill: SkillId,
     pub blockers: Vec<Blocker>,
 }
 
@@ -75,11 +85,12 @@ pub(crate) enum Blocker {
 // ---------------------------------------------------------------- planning (pure)
 
 pub(crate) fn plan(snap: &Snapshot, shelf: &Shelf, action: ManageAction) -> Plan {
-    let mut p = Plan { revision: snap.revision, action: action.clone(), steps: Vec::new(), effects: Vec::new(), blockers: Vec::new() };
+    let mut p = Plan::new(snap.revision, action.clone());
     match &action {
         ManageAction::RemoveMount(m) => take_mount(snap, shelf, m, ShelfReason::Removed, &mut p),
         ManageAction::Disable(m) => take_mount(snap, shelf, m, ShelfReason::Disabled, &mut p),
         ManageAction::DeleteBody(b) => delete_body(snap, b, &mut p),
+        ManageAction::DeleteBodies(ids) => delete_bodies(snap, ids, &mut p),
         ManageAction::Restore(id) => restore(snap, id, &mut p),
         ManageAction::Bundle(b, op) => bundle(snap, b, *op, &mut p),
     }
@@ -87,6 +98,9 @@ pub(crate) fn plan(snap: &Snapshot, shelf: &Shelf, action: ManageAction) -> Plan
 }
 
 impl Plan {
+    fn new(revision: u64, action: ManageAction) -> Plan {
+        Plan { revision, action, steps: Vec::new(), effects: Vec::new(), blockers: Vec::new(), skipped: Vec::new() }
+    }
     fn block(&mut self, b: Blocker) {
         if !self.blockers.contains(&b) {
             self.blockers.push(b);
@@ -169,6 +183,20 @@ fn delete_body(snap: &Snapshot, id: &SkillId, p: &mut Plan) {
     }
     p.steps.push(Step::Recycle { dir: body.dir.clone(), hash: body.content_hash.clone() });
     p.effects.push(Effect::BodyRecycled { dir: body.dir.as_path().to_path_buf() });
+}
+
+/// Each skill is planned alone first, so one that is blocked leaves the rest of the selection deletable.
+fn delete_bodies(snap: &Snapshot, ids: &[SkillId], p: &mut Plan) {
+    for id in ids {
+        let mut one = Plan::new(snap.revision, ManageAction::DeleteBody(id.clone()));
+        delete_body(snap, id, &mut one);
+        if one.blockers.is_empty() {
+            p.steps.append(&mut one.steps);
+            p.effects.append(&mut one.effects);
+        } else {
+            p.skipped.push(Skipped { skill: id.clone(), blockers: one.blockers });
+        }
+    }
 }
 
 fn restore(snap: &Snapshot, id: &ShelfId, p: &mut Plan) {

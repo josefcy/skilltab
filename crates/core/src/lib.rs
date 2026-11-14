@@ -445,6 +445,56 @@ mod tests {
             assert_eq!(*os.ran.lock().unwrap(), vec!["claude plugin disable pstack@cursor-plugins"]);
         }
 
+        fn bulk_ids(app: &Skilltab, names: &[&str]) -> Vec<String> {
+            let inv = app.inventory();
+            names.iter().map(|n| inv.rows.iter().find(|r| r.name == *n).unwrap_or_else(|| panic!("no row {n}")).id.clone()).collect()
+        }
+
+        #[test]
+        fn a_bulk_delete_names_the_count_lists_what_it_skips_and_recycles_each_folder_once() {
+            let h = Home::new();
+            h.skill(".claude/skills/a", "a");
+            h.skill(".claude/skills/c", "c");
+            h.claude_plugin();
+            let (app, os) = open(&h);
+            let skills = bulk_ids(&app, &["a", "architect", "c", "a"]);
+
+            let plan = app.plan(&ActionRequest::DeleteBodies { skills }).unwrap();
+            assert_eq!((plan.title.as_str(), plan.confirm.as_str()), ("Delete 2 skills everywhere", "Delete 2 skills"));
+            assert!(plan.ready && plan.blockers.is_empty());
+            assert_eq!(plan.steps.len(), 2, "the repeated id is one skill");
+            let skipped: Vec<(&str, bool)> = plan.skipped.iter().map(|s| (s.name.as_str(), s.reason.contains("plugin"))).collect();
+            assert_eq!(skipped, [("architect", true)]);
+            assert!(plan.skipped[0].remedy.contains("Disable plugin"), "{}", plan.skipped[0].remedy);
+
+            let report = app.apply(&plan.id).unwrap();
+            assert_eq!(report.outcome, ApplyOutcomeKind::Applied);
+            assert_eq!(os.recycled.lock().unwrap().len(), 2);
+            let left: Vec<String> = app.inventory().rows.into_iter().map(|r| r.name).collect();
+            assert_eq!(left, ["architect"]);
+
+            let bad = ActionRequest::DeleteBodies { skills: vec!["not-a-folder-id".into()] };
+            assert!(matches!(app.plan(&bad), Err(CoreError::UnknownId { .. })));
+        }
+
+        #[test]
+        fn a_bulk_delete_with_nothing_deletable_is_not_ready() {
+            let h = Home::new();
+            h.claude_plugin();
+            let (app, _) = open(&h);
+
+            let empty = app.plan(&ActionRequest::DeleteBodies { skills: Vec::new() }).unwrap();
+            assert!(!empty.ready && empty.skipped.is_empty() && empty.title == "Delete skills everywhere");
+
+            let all = app.plan(&ActionRequest::DeleteBodies { skills: bulk_ids(&app, &["architect"]) }).unwrap();
+            assert!(!all.ready && all.steps.is_empty() && all.blockers.is_empty());
+            assert_eq!(all.skipped.len(), 1);
+            assert_eq!(app.apply(&all.id).unwrap().steps.len(), 0);
+
+            let single = app.plan(&ActionRequest::DeleteBody { skill: bulk_ids(&app, &["architect"]).remove(0) }).unwrap();
+            assert!(single.skipped.is_empty() && !single.blockers.is_empty(), "a single delete still reports a blocker");
+        }
+
         #[test]
         fn an_id_the_core_did_not_issue_is_rejected() {
             let h = Home::new();

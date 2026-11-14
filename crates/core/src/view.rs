@@ -6,7 +6,7 @@
 //! so the UI renders what it is sent and filters on these fields without domain rules of its own.
 
 use crate::harness::BundleOp;
-use crate::manage::{ApplyOutcome, Blocker, Effect, ManageAction, Plan, Step, StepResult};
+use crate::manage::{ApplyOutcome, Blocker, Effect, ManageAction, Plan, Skipped, Step, StepResult};
 use crate::model::*;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -914,6 +914,8 @@ pub(crate) fn alias_views(snap: &Snapshot, store: &crate::aliases::AliasStore) -
 pub enum ActionRequest {
     RemoveMount { mount: String },
     DeleteBody { skill: String },
+    /// Several skills in one plan. Repeated ids count once.
+    DeleteBodies { skills: Vec<String> },
     Disable { mount: String },
     Restore { shelf: String },
     BundleEnable { bundle: String },
@@ -930,6 +932,8 @@ pub struct PlanView {
     pub steps: Vec<StepView>,
     pub effects: Vec<EffectView>,
     pub blockers: Vec<BlockerView>,
+    /// Skills a bulk delete leaves out, each with why. Always empty for a single action.
+    pub skipped: Vec<SkippedView>,
     /// No blockers and at least one step. The confirm button is enabled only then.
     pub ready: bool,
 }
@@ -959,6 +963,14 @@ pub enum StepKind {
 pub struct EffectView {
     pub harness: Option<Tag>,
     pub text: String,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedView {
+    pub name: String,
+    pub reason: String,
+    pub remedy: String,
 }
 
 #[derive(Serialize, Type)]
@@ -1033,6 +1045,16 @@ pub(crate) fn parse_action(snap: &Snapshot, req: &ActionRequest) -> Result<Manag
         ActionRequest::DeleteBody { skill } => {
             ManageAction::DeleteBody(snap.bodies.keys().find(|b| b.as_str() == skill).cloned().ok_or_else(|| unknown(skill))?)
         }
+        ActionRequest::DeleteBodies { skills } => {
+            let mut ids: Vec<SkillId> = Vec::new();
+            for s in skills {
+                let id = snap.bodies.keys().find(|b| b.as_str() == s).cloned().ok_or_else(|| unknown(s))?;
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            ManageAction::DeleteBodies(ids)
+        }
         ActionRequest::Restore { shelf } => {
             ManageAction::Restore(snap.shelf.iter().find(|e| e.id.as_str() == shelf).map(|e| e.id.clone()).ok_or_else(|| unknown(shelf))?)
         }
@@ -1044,7 +1066,7 @@ pub(crate) fn parse_action(snap: &Snapshot, req: &ActionRequest) -> Result<Manag
 pub(crate) fn plan_view(snap: &Snapshot, id: String, plan: &Plan) -> PlanView {
     let (tallies, tracking) = (Tallies::new(), TrackingSince::new());
     let cx = Cx::new(snap, &tallies, &tracking);
-    let (title, confirm) = cx.action_title(&plan.action);
+    let (title, confirm) = cx.action_title(plan);
     PlanView {
         id,
         title,
@@ -1052,6 +1074,7 @@ pub(crate) fn plan_view(snap: &Snapshot, id: String, plan: &Plan) -> PlanView {
         steps: plan.steps.iter().map(step_view).collect(),
         effects: plan.effects.iter().map(|e| cx.effect_view(e)).collect(),
         blockers: plan.blockers.iter().map(|b| cx.blocker_view(b)).collect(),
+        skipped: plan.skipped.iter().map(|s| cx.skipped_view(s)).collect(),
         ready: plan.blockers.is_empty() && !plan.steps.is_empty(),
     }
 }
@@ -1114,9 +1137,9 @@ impl Cx<'_> {
         }
     }
 
-    fn action_title(&self, a: &ManageAction) -> (String, String) {
+    fn action_title(&self, plan: &Plan) -> (String, String) {
         let harness_label = |t: &Option<Tag>| t.as_ref().map_or_else(|| "this harness".to_owned(), |t| t.label.clone());
-        match a {
+        match &plan.action {
             ManageAction::RemoveMount(m) => {
                 let (h, name, _) = self.mount_words(m);
                 (format!("Remove {name} from {}", harness_label(&h)), "Remove".into())
@@ -1129,6 +1152,13 @@ impl Cx<'_> {
                 let name = self.snap.bodies.get(b).map_or("this skill", |b| b.manifest.name.as_str());
                 (format!("Delete {name} everywhere"), "Move to Recycle Bin".into())
             }
+            ManageAction::DeleteBodies(ids) => match ids.len() - plan.skipped.len() {
+                0 => ("Delete skills everywhere".into(), "Move to Recycle Bin".into()),
+                n => {
+                    let skills = format!("{n} skill{}", if n == 1 { "" } else { "s" });
+                    (format!("Delete {skills} everywhere"), format!("Delete {skills}"))
+                }
+            },
             ManageAction::Restore(id) => match self.snap.shelf.iter().find(|e| &e.id == id) {
                 Some(e) => (format!("Restore {} in {}", e.name, self.tag(e.harness).label), "Restore".into()),
                 None => ("Restore".into(), "Restore".into()),
@@ -1161,6 +1191,13 @@ impl Cx<'_> {
                 EffectView { harness: None, text: format!("The folder {} and everything in it goes to the Recycle Bin.", path_str(dir)) }
             }
         }
+    }
+
+    fn skipped_view(&self, s: &Skipped) -> SkippedView {
+        let name = self.snap.bodies.get(&s.skill).map_or_else(|| "A skill that is no longer installed".to_owned(), |b| b.manifest.name.clone());
+        let views: Vec<BlockerView> = s.blockers.iter().map(|b| self.blocker_view(b)).collect();
+        let join = |text: fn(&BlockerView) -> &str| views.iter().map(text).collect::<Vec<_>>().join(" ");
+        SkippedView { name, reason: join(|v| &v.reason), remedy: join(|v| &v.remedy) }
     }
 
     fn blocker_view(&self, b: &Blocker) -> BlockerView {

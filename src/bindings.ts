@@ -27,7 +27,9 @@ export const events = {
 
 /* Types */
 /**  A change the UI asks for. It names things only by ids the core issued, never by path. */
-export type ActionRequest = { kind: "removeMount"; mount: string } | { kind: "deleteBody"; skill: string } | { kind: "disable"; mount: string } | { kind: "restore"; shelf: string } | { kind: "bundleEnable"; bundle: string } | { kind: "bundleDisable"; bundle: string };
+export type ActionRequest = { kind: "removeMount"; mount: string } | { kind: "deleteBody"; skill: string } | 
+/**  Several skills in one plan. Repeated ids count once. */
+{ kind: "deleteBodies"; skills: string[] } | { kind: "disable"; mount: string } | { kind: "restore"; shelf: string } | { kind: "bundleEnable"; bundle: string } | { kind: "bundleDisable"; bundle: string };
 
 /**  One suggestion to confirm, as `confirm_aliases` takes it. The strings are the wire forms from `AliasSuggestionView`. */
 export type AliasPick = {
@@ -222,6 +224,8 @@ export type PlanView = {
 	steps: StepView[],
 	effects: EffectView[],
 	blockers: BlockerView[],
+	/**  Skills a bulk delete leaves out, each with why. Always empty for a single action. */
+	skipped: SkippedView[],
 	/**  No blockers and at least one step. The confirm button is enabled only then. */
 	ready: boolean,
 };
@@ -287,6 +291,12 @@ export type SkillRow = {
 	mounts: MountSummary[],
 	usage: UsageSummary,
 	flags: Flag[],
+};
+
+export type SkippedView = {
+	name: string,
+	reason: string,
+	remedy: string,
 };
 
 export type StepKind = "removeLink" | "recycle" | "stash" | "relink" | "unstash" | "run";
