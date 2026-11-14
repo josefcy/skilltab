@@ -9,7 +9,7 @@ mod secret;
 
 use crate::fsutil;
 use crate::harness::{registry, Carry, HarnessSetup};
-use crate::model::{norm_key, FolderName, SetupManifest};
+use crate::model::{fold_name, norm_key, FolderName, SetupManifest};
 use crate::provenance::Provenance;
 use crate::view::CoreError;
 use crate::Env;
@@ -95,8 +95,9 @@ impl ConfigFile {
         join_rel(home.join(self.home_dir), &self.rel)
     }
 
+    /// The same file as the disk sees it, so `Rule.md` and `rule.md` are one where the disk ignores case.
     pub(crate) fn same_file(&self, other: &ConfigFile) -> bool {
-        self.home_dir == other.home_dir && self.rel == other.rel
+        self.home_dir == other.home_dir && fold_name(&self.rel) == fold_name(&other.rel)
     }
 }
 

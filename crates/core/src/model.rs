@@ -131,6 +131,12 @@ pub(crate) fn norm_key(p: &Path) -> String {
     }
 }
 
+/// A file name as the disk compares it. Windows and macOS volumes ignore case by default and Linux ones do not, so
+/// a case-only difference is one file on the first two and two files on the third.
+pub(crate) fn fold_name(name: &str) -> String {
+    if cfg!(any(windows, target_os = "macos")) { name.to_lowercase() } else { name.to_owned() }
+}
+
 // ---------------------------------------------------------------- the skill body
 
 #[derive(Debug, Clone)]
@@ -442,6 +448,11 @@ mod tests {
         assert_ne!(norm_key(Path::new("/home/u/Foo")), norm_key(Path::new("/home/u/foo")));
         assert_eq!(norm_key(Path::new("/")), "/");
         assert_eq!(norm_key(Path::new(r"/a\b")), r"/a\b");
+    }
+
+    #[test]
+    fn fold_name_ignores_case_only_where_the_disk_does() {
+        assert_eq!(fold_name("Rule.md") == fold_name("rule.md"), cfg!(any(windows, target_os = "macos")));
     }
 }
 

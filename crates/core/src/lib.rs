@@ -751,6 +751,45 @@ token: {secret}
         }
 
         #[test]
+        fn export_converges_after_a_case_only_rename_of_a_copy_where_the_disk_ignores_case() {
+            let folds = cfg!(any(windows, target_os = "macos"));
+            for edited in [false, true] {
+                let h = export_home();
+                let (app, _) = open(&h);
+                let first = app.plan(&export_request(&h)).unwrap();
+                app.apply(&first.id).unwrap();
+                let rules = h.p("repo/config/claude/rules");
+                std::fs::rename(rules.join("a-rule.md"), rules.join("A-RULE.md")).unwrap();
+                if edited {
+                    std::fs::write(h.p(".claude/rules/a-rule.md"), "rule a, edited
+").unwrap();
+                }
+
+                let plan = app.plan(&export_request(&h)).unwrap();
+                let steps: Vec<(view::StepKind, String)> =
+                    plan.steps.iter().map(|s| (s.kind, s.detail.rsplit(std::path::is_separator).next().unwrap().to_owned())).collect();
+                let expected: Vec<(view::StepKind, &str)> = match (folds, edited) {
+                    (true, false) => vec![],
+                    (true, true) => vec![(view::StepKind::Write, "A-RULE.md")],
+                    (false, _) => vec![(view::StepKind::Write, "a-rule.md"), (view::StepKind::Delete, "A-RULE.md")],
+                };
+                assert_eq!(steps.iter().map(|(k, n)| (*k, n.as_str())).collect::<Vec<_>>(), expected, "edited: {edited}");
+                if !plan.steps.is_empty() {
+                    assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Applied);
+                }
+
+                let again = app.plan(&export_request(&h)).unwrap();
+                assert!(again.steps.is_empty(), "edited: {edited}: {:?}", again.steps.iter().map(|s| &s.detail).collect::<Vec<_>>());
+                let mut names: Vec<String> =
+                    std::fs::read_dir(&rules).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+                names.sort();
+                assert_eq!(names, [if folds { "A-RULE.md" } else { "a-rule.md" }, "b-rule.md"], "edited: {edited}");
+                let copy = std::fs::read(rules.join(names[0].as_str())).unwrap();
+                assert_eq!(copy, std::fs::read(h.p(".claude/rules/a-rule.md")).unwrap(), "edited: {edited}");
+            }
+        }
+
+        #[test]
         fn a_manifest_that_appears_after_planning_is_not_overwritten() {
             let h = export_home();
             let (app, _) = open(&h);

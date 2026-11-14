@@ -45,8 +45,9 @@ pub(super) fn plan_export(i: &ExportInput, p: &mut Plan) {
     let manifest: Arc<[u8]> = i.manifest.render().into_bytes().into();
     put(p, i.dir.manifest_path(), manifest, i.on_disk_manifest.as_deref(), "manifest.json");
     for file in &i.sources {
-        let have = i.in_repo.iter().find(|r| r.same_file(file)).map(|r| &*r.bytes);
-        put(p, file.repo_path(&i.dir), file.bytes.clone(), have, &file.label());
+        let existing = i.in_repo.iter().find(|r| r.same_file(file));
+        let to = existing.map_or_else(|| file.repo_path(&i.dir), |r| r.repo_path(&i.dir));
+        put(p, to, file.bytes.clone(), existing.map(|r| &*r.bytes), &file.label());
     }
     for gone in i.in_repo.iter().filter(|r| !i.sources.iter().any(|s| s.same_file(r))) {
         p.steps.push(Step::Delete { path: gone.repo_path(&i.dir), was: ContentHash::of(&gone.bytes) });
