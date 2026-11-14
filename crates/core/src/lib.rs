@@ -663,6 +663,41 @@ mod tests {
         }
 
         #[test]
+        fn a_link_in_the_setup_folder_blocks_the_export_and_nothing_behind_it_is_touched() {
+            let places = ["manifest.json", "config", "config/claude", "config/claude/rules", "config/claude/rules/z.md"];
+            for place in places {
+                let h = export_home();
+                let (app, os) = open(&h);
+                let first = app.plan(&export_request(&h)).unwrap();
+                app.apply(&first.id).unwrap();
+
+                std::fs::create_dir_all(h.p("outside")).unwrap();
+                for name in ["old.md", "CLAUDE.md"] {
+                    std::fs::write(h.p("outside").join(name), "outside").unwrap();
+                }
+                let linked = h.p(&format!("repo/{place}"));
+                if linked.is_dir() {
+                    std::fs::remove_dir_all(&linked).unwrap();
+                } else if linked.exists() {
+                    std::fs::remove_file(&linked).unwrap();
+                }
+                h.link(&format!("repo/{place}"), "outside");
+                let before = crate::testutil::listing(&h.p("outside"));
+
+                let plan = app.plan(&export_request(&h)).unwrap();
+                let steps: Vec<&String> = plan.steps.iter().map(|s| &s.detail).collect();
+                let reasons: Vec<&String> = plan.blockers.iter().map(|b| &b.reason).collect();
+                assert!(!plan.ready && steps.is_empty(), "{place}: {steps:?}");
+                assert!(reasons.iter().any(|r| r.contains(place) && r.contains("is a link")), "{place}: {reasons:?}");
+                assert!(plan.blockers.iter().all(|b| b.remedy.contains("Remove the link or pick another folder")), "{place}");
+
+                assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Refused, "{place}");
+                assert_eq!(crate::testutil::listing(&h.p("outside")), before, "{place}");
+                assert!(os.ran.lock().unwrap().is_empty() && os.recycled.lock().unwrap().is_empty());
+            }
+        }
+
+        #[test]
         fn export_replaces_changed_copies_and_deletes_copies_of_files_that_left_the_machine() {
             let h = export_home();
             let (app, _) = open(&h);

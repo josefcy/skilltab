@@ -4,7 +4,7 @@
 
 skilltab has one row per **skill body**. A skill body is one physical folder holding a `SKILL.md`. It is not one row per path. `~/.claude/skills/tdd` (a junction), `~/.agents/skills/tdd` (another junction) and `~/.agents/.../tdd` (the real folder) all collapse into one row. That row has one **mount** per place a harness sees the skill.
 
-The UI sends ids that the backend issued, so the webview can never ask the core to delete an arbitrary path. The one path it sends is the setup folder of Export and Restore, which core parses once into a `SetupDir`. An export writes only `manifest.json` and allowlisted files under `config/` in that folder, and it deletes only allowlisted files there. A restore only reads that folder. It writes links and allowlisted files on this machine, and the copy of a differing file beside it as `<name>.from-backup`.
+The UI sends ids that the backend issued, so the webview can never ask the core to delete an arbitrary path. The one path it sends is the setup folder of Export and Restore, which core parses once into a `SetupDir`. An export writes only `manifest.json` and allowlisted files under `config/` in that folder, and it deletes only allowlisted files there. It refuses a folder where `manifest.json` or anything under `config/` is a link. A restore only reads that folder. It writes links and allowlisted files on this machine, and the copy of a differing file beside it as `<name>.from-backup`.
 
 Every change goes through **plan, then apply**. A plan is a pure preview built from the current snapshot: the exact filesystem steps, what else breaks, and what blocks the change. Apply re-checks the plan's preconditions against the live disk before doing anything.
 

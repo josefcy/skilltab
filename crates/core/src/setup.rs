@@ -166,9 +166,14 @@ pub(crate) fn read_export(env: &Env, dir: SetupDir) -> ExportInput {
 
     let setups: Vec<HarnessSetup> = registry().iter().map(|h| h.setup()).filter(|s| !s.config_home.is_empty()).collect();
     let (mut sources, mut in_repo) = (Vec::new(), Vec::new());
+    let links = link_problems(&dir);
+    let linked = !links.is_empty();
+    problems.extend(links);
     for setup in &setups {
         sources.extend(read_config(&env.home.join(setup.config_home), setup, &mut problems));
-        in_repo.extend(read_config(&dir.config_dir().join(repo_name(setup.config_home)), setup, &mut problems));
+        if !linked {
+            in_repo.extend(read_config(&dir.config_dir().join(repo_name(setup.config_home)), setup, &mut problems));
+        }
     }
     if let Some(folder) = guarded_folder(env, &dir, &setups) {
         problems.push(Problem {
@@ -177,6 +182,44 @@ pub(crate) fn read_export(env: &Env, dir: SetupDir) -> ExportInput {
         });
     }
     ExportInput { dir, manifest, unrebuildable, problems, on_disk_manifest, sources, in_repo }
+}
+
+/// How many links an export names one by one before it sums up the rest.
+const LINKS_NAMED: usize = 10;
+
+/// A problem for each link at or below `<dir>/manifest.json` and `<dir>/config`, none of them followed. Export
+/// writes and deletes there, so a link in a cloned folder would carry it outside the setup folder.
+fn link_problems(dir: &SetupDir) -> Vec<Problem> {
+    fn walk(path: &Path, out: &mut Vec<PathBuf>, problems: &mut Vec<Problem>) {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => out.push(path.to_path_buf()),
+            Ok(meta) if meta.is_dir() => match std::fs::read_dir(path) {
+                Ok(read) => {
+                    let mut items: Vec<PathBuf> = read.flatten().map(|i| i.path()).collect();
+                    items.sort();
+                    items.iter().for_each(|item| walk(item, out, problems));
+                }
+                Err(e) => problems.push(Problem::new(format!("Could not read {}: {e}.", path.display()))),
+            },
+            _ => {}
+        }
+    }
+    let (mut links, mut problems) = (Vec::new(), Vec::new());
+    walk(&dir.manifest_path(), &mut links, &mut problems);
+    walk(&dir.config_dir(), &mut links, &mut problems);
+    let remedy = "Remove the link or pick another folder.".to_owned();
+    let named = |path: &Path| format!("{} is a link. skilltab will not write through a link.", relative_label(dir.as_path(), path));
+    problems.extend(links.iter().take(LINKS_NAMED).map(|path| Problem { why: named(path), remedy: remedy.clone() }));
+    if links.len() > LINKS_NAMED {
+        let more = links.len() - LINKS_NAMED;
+        problems.push(Problem { why: format!("{more} more links are in the setup folder. skilltab will not write through a link."), remedy });
+    }
+    problems
+}
+
+fn relative_label(root: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/")
 }
 
 /// The folder under the home folder that holds `dir`, if it is one a harness or the skills CLI owns.

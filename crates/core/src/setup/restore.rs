@@ -1,7 +1,7 @@
 //! Reads what a restore needs: the setup folder, and this machine at exactly the paths the restore will touch.
 //! It writes nothing. `Wanted` is the one list of those paths, so the reader cannot miss one the planner asks about.
 
-use super::{join_rel, own_skills, read_config, repo_name, ConfigFile, Problem, SetupDir};
+use super::{join_rel, own_skills, read_config, relative_label, repo_name, ConfigFile, Problem, SetupDir};
 use crate::fsutil;
 use crate::harness::{registry, HarnessSetup, PluginRecord};
 use crate::manage::Os;
@@ -291,11 +291,6 @@ fn walk_files(folder: &Path, out: &mut Vec<PathBuf>, problems: &mut Vec<Problem>
             _ => out.push(item.path()),
         }
     }
-}
-
-fn relative_label(root: &Path, path: &Path) -> String {
-    let rel = path.strip_prefix(root).unwrap_or(path);
-    rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/")
 }
 
 #[cfg(test)]
