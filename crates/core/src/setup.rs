@@ -217,7 +217,7 @@ fn link_problems(dir: &SetupDir) -> Vec<Problem> {
     problems
 }
 
-fn relative_label(root: &Path, path: &Path) -> String {
+pub(crate) fn relative_label(root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(root).unwrap_or(path);
     rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/")
 }

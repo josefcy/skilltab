@@ -64,7 +64,7 @@ Only markdown is carried. `settings.json`, `config.toml`, `hooks.json`, auth fil
 ## What Restore does with it
 
 - It links each own skill into the skills folder of every harness, when that slot is free. An entry under `skills/` that is itself a link is not an own skill. The plan names it and links nothing, because a cloned folder could point it anywhere.
-- It copies a config file when the destination is absent. When the destination holds other content, it writes the setup copy beside it as `<name>.from-backup` and tells you to merge by hand.
+- It copies a config file when the destination is absent. When the destination holds other content, it writes the setup copy beside it as `<name>.from-backup` and tells you to merge by hand. When a `<name>.from-backup` is already there and differs from the setup copy, Restore leaves it alone, because you may have edited it, and the plan names where the setup copy is so you can compare by hand.
 - It runs `claude plugin marketplace add`, `claude plugin install` and one `npx skills add` per source, for what is missing. Every command runs with `HOME` and `USERPROFILE` set to the home folder skilltab is using.
 - It never replaces a real folder, a link that points elsewhere or a config file that differs.
 - It does not sign in. The plan lists that as the last step for you.

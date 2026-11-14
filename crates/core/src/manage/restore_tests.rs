@@ -224,11 +224,8 @@ fn a_differing_config_file_gets_a_from_backup_copy_and_is_never_written_over() {
     let h = &r.h;
 
     let plan = r.plan();
-    assert_eq!(
-        steps(&plan),
-        [(StepKind::Write, path(h, ".claude/CLAUDE.md.from-backup")), (StepKind::Write, path(h, ".codex/AGENTS.md.from-backup"))]
-    );
-    assert_eq!((plan.steps[0].text.as_str(), plan.steps[1].text.as_str()), ("Write a new file", "Replace the file"));
+    assert_eq!(steps(&plan), [(StepKind::Write, path(h, ".claude/CLAUDE.md.from-backup"))]);
+    assert_eq!(plan.steps[0].text, "Write a new file");
     assert!(notes(&plan, ViewNote::Present).iter().any(|n| n.contains("rules/r.md")), "a CRLF checkout is not a difference");
     assert_eq!(notes(&plan, ViewNote::Attention).len(), 2);
 
@@ -236,13 +233,39 @@ fn a_differing_config_file_gets_a_from_backup_copy_and_is_never_written_over() {
     assert_eq!(fs::read_to_string(h.p(".claude/CLAUDE.md")).unwrap(), "mine");
     assert_eq!(fs::read_to_string(h.p(".codex/AGENTS.md")).unwrap(), "mine too");
     assert_eq!(fs::read_to_string(h.p(".claude/CLAUDE.md.from-backup")).unwrap(), "from the backup");
-    assert_eq!(fs::read_to_string(h.p(".codex/AGENTS.md.from-backup")).unwrap(), "agents");
+    assert_eq!(fs::read_to_string(h.p(".codex/AGENTS.md.from-backup")).unwrap(), "an older backup");
 
     let again = r.plan();
     assert!(again.steps.is_empty(), "{:?}", steps(&again));
     let attention = notes(&again, ViewNote::Attention);
     assert_eq!(attention.len(), 2);
-    assert!(attention.iter().all(|n| n.contains("already at")), "{attention:?}");
+    assert!(attention.iter().any(|n| n.contains("already at")), "{attention:?}");
+    assert!(attention.iter().any(|n| n.contains("AGENTS.md.from-backup") && n.contains("differs too")), "{attention:?}");
+}
+
+#[test]
+fn a_from_backup_file_that_differs_is_left_alone_and_the_backup_copy_is_named() {
+    let h = Home::new();
+    setup_folder(&h, "{}");
+    write(&h, ".claude/CLAUDE.md", "mine");
+    write(&h, ".claude/CLAUDE.md.from-backup", "edited by hand");
+    write(&h, ".codex/AGENTS.md", "agents");
+    write(&h, ".claude/rules/r.md", "rule");
+    let r = Rig::with_tools(h);
+    let h = &r.h;
+
+    let plan = r.plan();
+    assert!(steps(&plan).iter().all(|(_, detail)| !detail.contains("from-backup")), "{:?}", steps(&plan));
+    let attention = notes(&plan, ViewNote::Attention);
+    assert_eq!(attention.len(), 1, "{attention:?}");
+    assert!(attention[0].contains(".claude/CLAUDE.md.from-backup") && attention[0].contains("differs"), "{attention:?}");
+    assert!(attention[0].contains("config/claude/CLAUDE.md") && attention[0].contains("by hand"), "{attention:?}");
+
+    let before = listing(&h.p(".claude"));
+    r.apply(&plan);
+    assert_eq!(listing(&h.p(".claude")), before);
+    assert_eq!(fs::read_to_string(h.p(".claude/CLAUDE.md.from-backup")).unwrap(), "edited by hand");
+    assert!(r.plan().steps.is_empty());
 }
 
 #[test]

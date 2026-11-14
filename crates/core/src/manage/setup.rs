@@ -3,7 +3,7 @@
 use super::{Blocker, Note, NoteKind, Plan, Step, Was};
 use crate::harness::{registry, ExternalCommand, PluginRecord, PluginState};
 use crate::model::{norm_key, ContentHash};
-use crate::setup::{find_secret, Entry, ExportInput, RestoreInput, Wanted, SKILLS_CLI};
+use crate::setup::{find_secret, relative_label, Entry, ExportInput, RestoreInput, Wanted, SKILLS_CLI};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -64,8 +64,8 @@ fn put(p: &mut Plan, to: PathBuf, bytes: Arc<[u8]>, have: Option<&[u8]>, what: &
 
 /// Rebuilds the setup from a setup folder, local steps first and network steps after, so a failed download
 /// cannot strand the links and files. Each step is planned only when something is missing at plan time, so the next
-/// plan after a finished restore has no steps. A real folder, a link to somewhere else or a config file that
-/// differs is never replaced. The plan says so and leaves it.
+/// plan after a finished restore has no steps. A real folder, a link to somewhere else, a config file that
+/// differs or a `.from-backup` file that differs is never replaced. The plan says so and leaves it.
 pub(super) fn plan_restore(i: &RestoreInput, p: &mut Plan) {
     for problem in &i.problems {
         p.block(Blocker::Unsupported { why: problem.why.clone(), remedy: problem.remedy.clone() });
@@ -142,8 +142,15 @@ fn copy_config(i: &RestoreInput, wanted: &Wanted, p: &mut Plan) {
                 );
                 continue;
             }
-            (_, Some(old)) => {
-                p.steps.push(Step::Write { to: c.aside.clone(), bytes: bytes.clone(), was: Was::Hash(ContentHash::of(old)) });
+            (_, Some(_)) => {
+                let backup = relative_label(i.dir.as_path(), &c.file.repo_path(&i.dir));
+                p.note(
+                    NoteKind::Attention,
+                    format!(
+                        "{label} differs from the backup, and {aside} already exists and differs too. It is left alone. The backup copy is {backup} in the setup folder. Compare by hand."
+                    ),
+                );
+                continue;
             }
             (_, None) => {
                 p.note(
