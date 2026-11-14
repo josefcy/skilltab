@@ -61,6 +61,8 @@ The carried files are an allowlist, one per harness:
 
 Export matches a file on the machine to its copy in the setup folder the way the disk compares names. Where the disk ignores case (Windows and macOS), `Rule.md` and `rule.md` are one file and the copy keeps the spelling it has. On Linux they are two.
 
+Hidden files and folders are skipped, as `backup.ps1` skips them. On Windows that means the Hidden attribute, so `rules/.x.md` is carried. On Linux and macOS it means a name that starts with a dot.
+
 Only markdown is carried. `settings.json`, `config.toml`, `hooks.json`, auth files and sessions are never exported, and a restore ignores them if they appear in the folder. Export refuses to run when a carried file matches one of eight secret patterns, and names the file. The scan reads each file as UTF-8 and as `ReadAllText` would, so a file with a UTF-16 or UTF-32 byte order mark is scanned as the text it holds. It also refuses when `manifest.json`, `config/` or anything under it is a link (a symlink or a Windows junction), because a link in a cloned folder would carry its writes and deletes outside the setup folder.
 
 ## What Restore does with it

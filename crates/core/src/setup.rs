@@ -239,7 +239,7 @@ fn guarded_folder(env: &Env, dir: &SetupDir, setups: &[HarnessSetup]) -> Option<
     None
 }
 
-/// Folders directly under `<dir>/skills`, as `backup.ps1` lists them. A dot folder is hidden and skipped.
+/// Folders directly under `<dir>/skills`, as `backup.ps1` lists them. A hidden folder is skipped.
 fn own_skills(dir: &SetupDir, problems: &mut Vec<Problem>) -> BTreeSet<FolderName> {
     let root = dir.skills_dir();
     let mut out = BTreeSet::new();
@@ -252,13 +252,13 @@ fn own_skills(dir: &SetupDir, problems: &mut Vec<Problem>) -> BTreeSet<FolderNam
         }
     };
     for item in read.flatten().filter(|i| i.path().is_dir()) {
+        if item.metadata().is_ok_and(|meta| fsutil::is_hidden(&item.path(), &meta)) {
+            continue;
+        }
         let Some(name) = item.file_name().to_str().map(str::to_owned) else {
             problems.push(Problem::new(format!("A folder in {} has a name that is not valid text.", root.display())));
             continue;
         };
-        if name.starts_with('.') {
-            continue;
-        }
         match FolderName::parse(&name) {
             Ok(n) => {
                 out.insert(n);
@@ -313,7 +313,7 @@ fn read_config(root: &Path, setup: &HarnessSetup, problems: &mut Vec<Problem>) -
     out
 }
 
-/// Sorted names of the files directly in `folder` that end in `.ext`, in any case. Dot files are hidden and skipped.
+/// Sorted names of the files directly in `folder` that end in `.ext`, in any case. Hidden files are skipped.
 fn names_with_extension(folder: &Path, ext: &str, problems: &mut Vec<Problem>) -> Vec<String> {
     let read = match std::fs::read_dir(folder) {
         Ok(read) => read,
@@ -329,9 +329,11 @@ fn names_with_extension(folder: &Path, ext: &str, problems: &mut Vec<Problem>) -
         if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) || !path.is_file() {
             continue;
         }
+        if item.metadata().is_ok_and(|meta| fsutil::is_hidden(&path, &meta)) {
+            continue;
+        }
         match item.file_name().to_str() {
-            Some(name) if !name.starts_with('.') => names.push(name.to_owned()),
-            Some(_) => {}
+            Some(name) => names.push(name.to_owned()),
             None => problems.push(Problem::new(format!("A file in {} has a name that is not valid text.", folder.display()))),
         }
     }
@@ -342,7 +344,7 @@ fn names_with_extension(folder: &Path, ext: &str, problems: &mut Vec<Problem>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{copy_tree, Home};
+    use crate::testutil::{copy_tree, hide, Home};
     use std::fs;
 
     fn fixture(rel: &str) -> PathBuf {
@@ -433,6 +435,31 @@ mod tests {
     }
 
     #[test]
+    fn hidden_means_what_backup_ps1_means_on_each_os() {
+        let h = Home::new();
+        for rel in [".claude/rules/shown.md", ".claude/rules/.dot.md", ".claude/rules/hid.md", "repo/config/claude/rules/.dot.md"] {
+            fs::create_dir_all(h.p(rel).parent().unwrap()).unwrap();
+            fs::write(h.p(rel), "x").unwrap();
+        }
+        for rel in ["repo/skills/shown", "repo/skills/.dot", "repo/skills/hid"] {
+            fs::create_dir_all(h.p(rel)).unwrap();
+        }
+        hide(&h.p(".claude/rules/hid.md"));
+        hide(&h.p("repo/skills/hid"));
+        let env = h.env();
+        let input = read_export(&env, SetupDir::parse(&env, "~/repo").unwrap());
+
+        let visible = if cfg!(windows) { ".dot" } else { "hid" };
+        let labels: Vec<String> = input.sources.iter().map(ConfigFile::label).collect();
+        assert_eq!(labels, [format!("~/.claude/rules/{visible}.md"), "~/.claude/rules/shown.md".to_owned()]);
+        let own: Vec<&str> = input.manifest.own_skills.iter().map(FolderName::as_str).collect();
+        assert_eq!(own, [visible, "shown"]);
+        let in_repo: Vec<String> = input.in_repo.iter().map(ConfigFile::label).collect();
+        assert_eq!(in_repo, if cfg!(windows) { vec!["~/.claude/rules/.dot.md"] } else { vec![] });
+        assert!(input.problems.is_empty(), "{:?}", input.problems);
+    }
+
+    #[test]
     fn export_names_an_own_skill_folder_it_cannot_put_in_a_manifest() {
         let h = Home::new();
         fs::create_dir_all(h.p("repo/skills/ok")).unwrap();
@@ -442,7 +469,7 @@ mod tests {
         let env = h.env();
         let input = read_export(&env, SetupDir::parse(&env, "~/repo").unwrap());
         let own: Vec<&str> = input.manifest.own_skills.iter().map(FolderName::as_str).collect();
-        assert_eq!(own, ["ok"]);
+        assert_eq!(own, if cfg!(windows) { vec![".hidden", "ok"] } else { vec!["ok"] });
         assert_eq!(input.problems.len(), 1);
         assert!(input.problems[0].why.contains("-flag"), "{:?}", input.problems);
     }

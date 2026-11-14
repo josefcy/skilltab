@@ -34,6 +34,20 @@ pub(crate) fn strip_verbatim(p: PathBuf) -> PathBuf {
     }
 }
 
+/// Hidden as `backup.ps1` sees it. PowerShell lists a file on Windows unless it has the Hidden attribute, and on
+/// Linux and macOS unless its name starts with a dot.
+#[cfg(windows)]
+pub(crate) fn is_hidden(_path: &Path, meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+    meta.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0
+}
+
+#[cfg(unix)]
+pub(crate) fn is_hidden(path: &Path, _meta: &std::fs::Metadata) -> bool {
+    path.file_name().is_some_and(|name| name.as_encoded_bytes().starts_with(b"."))
+}
+
 /// Two paths with equal ids are one file system object. `Display` is the text `usage.db` stores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FileId(pub(crate) u64, pub(crate) u64);

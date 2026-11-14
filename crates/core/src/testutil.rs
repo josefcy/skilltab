@@ -24,6 +24,14 @@ pub(crate) fn unlink(entry: &Path) {
     fs::remove_file(entry).unwrap();
 }
 
+/// Gives a file or folder the Hidden attribute. Elsewhere only a leading dot hides, so this does nothing.
+pub(crate) fn hide(path: &Path) {
+    #[cfg(windows)]
+    assert!(std::process::Command::new("attrib").arg("+h").arg(path).status().unwrap().success());
+    #[cfg(unix)]
+    let _ = path;
+}
+
 /// Copies the files and folders under `from` into `to`, byte for byte.
 pub(crate) fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();

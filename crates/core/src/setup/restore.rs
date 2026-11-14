@@ -355,6 +355,27 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_folder_under_skills_and_a_hidden_rule_are_not_carried() {
+        let h = Home::new();
+        setup_folder(&h);
+        fs::create_dir_all(h.p("repo/skills/.dot")).unwrap();
+        fs::create_dir_all(h.p("repo/skills/hid")).unwrap();
+        fs::write(h.p("repo/config/claude/rules/.dot.md"), "x").unwrap();
+        fs::write(h.p("repo/config/claude/rules/hid.md"), "x").unwrap();
+        crate::testutil::hide(&h.p("repo/skills/hid"));
+        crate::testutil::hide(&h.p("repo/config/claude/rules/hid.md"));
+        let input = read(&h, &FakeOs::default()).unwrap();
+
+        let (carried, skipped) = if cfg!(windows) { (".dot", "hid") } else { ("hid", ".dot") };
+        let own: Vec<&str> = input.repo_skills.iter().map(FolderName::as_str).collect();
+        assert_eq!(own, [carried, "own1"]);
+        let labels: Vec<String> = input.repo_config.iter().map(ConfigFile::label).collect();
+        assert!(labels.contains(&format!("~/.claude/rules/{carried}.md")), "{labels:?}");
+        assert!(!labels.contains(&format!("~/.claude/rules/{skipped}.md")), "{labels:?}");
+        assert!(input.ignored.contains(&format!("config/claude/rules/{skipped}.md")), "{:?}", input.ignored);
+    }
+
+    #[test]
     fn a_file_outside_the_allowlist_is_named_and_never_carried() {
         let h = Home::new();
         setup_folder(&h);
