@@ -64,6 +64,17 @@ impl Harness for Codex {
         d
     }
 
+    fn setup(&self) -> HarnessSetup {
+        HarnessSetup {
+            config_home: ".codex",
+            carry: &[Carry::File("AGENTS.md")],
+            skills_dir: Some(".agents/skills"),
+            skills_cli_agent: Some("codex"),
+            tools: &[],
+            sign_in: Some("Run codex login."),
+        }
+    }
+
     fn usage_sources(&self, env: &Env) -> Vec<UsageSource> {
         let codex = env.home.join(".codex");
         let mut out = Vec::new();

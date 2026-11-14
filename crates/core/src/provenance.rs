@@ -7,7 +7,7 @@
 use crate::fsutil;
 use crate::model::*;
 use crate::Env;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 pub struct Provenance {
@@ -16,13 +16,39 @@ pub struct Provenance {
     agents_skills: String,
     claude_skills: String,
     issues: Vec<ScanIssue>,
+    /// Set when the lock exists but cannot be read as v3. A setup export then has no sources to offer.
+    lock_error: Option<String>,
 }
 
 struct LockEntry {
     source: String,
+    source_type: Option<String>,
     source_url: Option<String>,
+    source_base_url: Option<String>,
     git_ref: Option<String>,
     skill_folder_hash: String,
+}
+
+impl LockEntry {
+    /// The source `npx skills add` is given to install this skill again, chosen as `backup.ps1` chooses it.
+    /// PowerShell compares strings without regard to case, and an absent type is not "github".
+    fn install_source(&self) -> &str {
+        let is = |kind: &str| self.source_type.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(kind));
+        fn set(o: &Option<String>) -> Option<&str> {
+            o.as_deref().filter(|s| !s.is_empty())
+        }
+        if is("well-known")
+            && let Some(base) = set(&self.source_base_url)
+        {
+            base
+        } else if !is("github")
+            && let Some(url) = set(&self.source_url)
+        {
+            url
+        } else {
+            &self.source
+        }
+    }
 }
 
 const LOCK_VERSION: i64 = 3;
@@ -39,6 +65,7 @@ impl Provenance {
             agents_skills: norm_key(&agents_dir.join("skills")),
             claude_skills: norm_key(&claude_skills),
             issues: Vec::new(),
+            lock_error: None,
         };
         p.load_lock(&agents_dir.join(".skill-lock.json"));
         p.load_synced(&claude_skills.join("synced"));
@@ -47,6 +74,24 @@ impl Provenance {
 
     pub fn issues(&self) -> &[ScanIssue] {
         &self.issues
+    }
+
+    /// The lock's skills grouped by the source that installs them again, as `backup.ps1` groups them.
+    /// Err when the lock exists but is unreadable or not v3, so Export never writes a manifest from half a machine.
+    /// No lock is no sources.
+    pub(crate) fn skill_sources(&self) -> Result<BTreeMap<Arg, BTreeSet<FolderName>>, String> {
+        if let Some(e) = &self.lock_error {
+            return Err(e.clone());
+        }
+        let mut names: Vec<&String> = self.lock.keys().collect();
+        names.sort();
+        let mut out: BTreeMap<Arg, BTreeSet<FolderName>> = BTreeMap::new();
+        for name in names {
+            let source = Arg::parse(self.lock[name].install_source()).map_err(|e| format!("The source of skill {name} {e}."))?;
+            let skill = FolderName::parse(name).map_err(|e| format!("A skill name in the skill lock {e}."))?;
+            out.entry(source).or_default().insert(skill);
+        }
+        Ok(out)
     }
 
     /// Order matters. The first match wins:
@@ -94,15 +139,20 @@ impl Provenance {
         self.issues.push(ScanIssue::Unreadable { path: path.to_path_buf(), error });
     }
 
+    fn lock_problem(&mut self, path: &Path, error: String) {
+        self.lock_error = Some(format!("The skill lock {} cannot be read: {error}.", path.display()));
+        self.problem(path, error);
+    }
+
     fn load_lock(&mut self, path: &Path) {
         let json = match fsutil::read_json(path) {
             Ok(Some(j)) => j,
             Ok(None) => return,
-            Err(e) => return self.problem(path, e),
+            Err(e) => return self.lock_problem(path, e),
         };
         let version = json.get("version").and_then(|v| v.as_i64());
         if version != Some(LOCK_VERSION) {
-            return self.problem(path, format!("unsupported skill-lock version {version:?}, expected {LOCK_VERSION}"));
+            return self.lock_problem(path, format!("unsupported skill-lock version {version:?}, expected {LOCK_VERSION}"));
         }
         let Some(skills) = json.get("skills").and_then(|s| s.as_object()) else { return };
         for (name, v) in skills {
@@ -112,7 +162,9 @@ impl Provenance {
                 name.clone(),
                 LockEntry {
                     source,
+                    source_type: text("sourceType"),
                     source_url: text("sourceUrl"),
+                    source_base_url: text("sourceBaseUrl"),
                     git_ref: text("ref"),
                     skill_folder_hash: text("skillFolderHash").unwrap_or_default(),
                 },
@@ -184,5 +236,63 @@ mod tests {
         let p = Provenance::load(&env(t.path()));
         let entry = t.path().join(".agents").join("skills").join("a");
         assert_eq!(p.owner(&entry, Ownership::Unmanaged), Ownership::SkillsCli);
+    }
+
+    fn lock(home: &Path, text: &str) -> Provenance {
+        fs::create_dir_all(home.join(".agents")).unwrap();
+        fs::write(home.join(".agents").join(".skill-lock.json"), text).unwrap();
+        Provenance::load(&env(home))
+    }
+
+    fn grouped(p: &Provenance) -> Vec<(String, Vec<String>)> {
+        let sources = p.skill_sources().unwrap();
+        sources.iter().map(|(k, v)| (k.as_str().to_owned(), v.iter().map(|n| n.as_str().to_owned()).collect())).collect()
+    }
+
+    #[test]
+    fn sources_group_by_the_rule_backup_ps1_uses() {
+        let t = tempfile::tempdir().unwrap();
+        let p = lock(
+            t.path(),
+            r#"{"version":3,"skills":{
+                "s-two":{"source":"acme/skills","sourceType":"github","sourceUrl":"https://github.com/acme/skills.git"},
+                "s-one":{"source":"acme/skills","sourceType":"GitHub","sourceUrl":"https://github.com/acme/skills.git"},
+                "Upper":{"source":"acme/skills","sourceType":"github"},
+                "wk":{"source":"example.test","sourceType":"well-known","sourceBaseUrl":"https://example.test","sourceUrl":"https://example.test/x"},
+                "wk-bare":{"source":"example.test","sourceType":"well-known","sourceUrl":"https://example.test/y"},
+                "gitty":{"source":"ignored","sourceType":"git","sourceUrl":"https://example.test/g.git"},
+                "untyped":{"source":"plain/src","sourceUrl":"https://example.test/u.git"},
+                "empty-url":{"source":"plain/empty","sourceType":"git","sourceUrl":""},
+                "nosource":{"sourceType":"git","sourceUrl":"https://example.test/skipped.git"}}}"#,
+        );
+        let group = |source: &str, names: &[&str]| (source.to_owned(), names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>());
+        assert_eq!(
+            grouped(&p),
+            [
+                group("acme/skills", &["Upper", "s-one", "s-two"]),
+                group("https://example.test", &["wk"]),
+                group("https://example.test/g.git", &["gitty"]),
+                group("https://example.test/u.git", &["untyped"]),
+                group("https://example.test/y", &["wk-bare"]),
+                group("plain/empty", &["empty-url"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_lock_is_no_sources_but_a_lock_that_cannot_be_read_is_an_error() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(Provenance::load(&env(t.path())).skill_sources().unwrap().is_empty());
+        for text in [r#"{"version":2,"skills":{"a":{"source":"x/y"}}}"#, "{not json", r#"{"skills":{}}"#] {
+            let e = lock(t.path(), text).skill_sources().unwrap_err();
+            assert!(e.contains(".skill-lock.json"), "{e}");
+        }
+    }
+
+    #[test]
+    fn a_lock_entry_that_would_become_a_flag_or_a_path_is_an_error() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(lock(t.path(), r#"{"version":3,"skills":{"a":{"source":"-y"}}}"#).skill_sources().is_err());
+        assert!(lock(t.path(), r#"{"version":3,"skills":{"..":{"source":"x/y"}}}"#).skill_sources().is_err());
     }
 }
