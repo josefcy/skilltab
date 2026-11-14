@@ -30,8 +30,10 @@ pub(crate) struct RestoreInput {
     pub repo_config: Vec<ConfigFile>,
     /// Everything else under `<dir>/config`, as paths relative to the setup folder. Named in the plan, never written.
     pub ignored: Vec<String>,
-    /// The folders directly under `<dir>/skills`.
+    /// The folders directly under `<dir>/skills`. A link is never one.
     pub repo_skills: BTreeSet<FolderName>,
+    /// The links directly under `<dir>/skills`. A cloned repo can point one anywhere, so none is linked.
+    pub linked_skills: BTreeSet<FolderName>,
     /// What each harness has installed, so `plugin_ops` can tell what is missing.
     pub plugins: Vec<(HarnessId, PluginRecord)>,
     /// An unreadable input. Any one of them blocks the plan, so a half-read machine is never restored over.
@@ -219,12 +221,19 @@ pub(crate) fn read_restore(env: &Env, os: &dyn Os, dir: SetupDir) -> Result<Rest
             Err(why) => scratch.push(Problem::new(why)),
         }
     }
-    let repo_skills = own_skills(&dir, &mut Vec::new());
+    let linked_skills = linked_skills(&dir);
+    let repo_skills = own_skills(&dir, &mut Vec::new()).difference(&linked_skills).cloned().collect();
     let (repo_config, ignored) = read_repo_config(&dir, &mut scratch);
     let wanted = Wanted::new(&manifest, &dir, &env.home, &repo_config);
     let seen = Seen::read(&wanted, os);
     let problems = scratch.into_iter().map(|p| Problem::for_restore(p.why)).collect();
-    Ok(RestoreInput { dir, home: env.home.clone(), manifest, repo_config, ignored, repo_skills, plugins, problems, seen })
+    Ok(RestoreInput { dir, home: env.home.clone(), manifest, repo_config, ignored, repo_skills, linked_skills, plugins, problems, seen })
+}
+
+fn linked_skills(dir: &SetupDir) -> BTreeSet<FolderName> {
+    let Ok(read) = std::fs::read_dir(dir.skills_dir()) else { return BTreeSet::new() };
+    let links = read.flatten().filter(|item| item.file_type().is_ok_and(|kind| kind.is_symlink()));
+    links.filter_map(|item| FolderName::parse(item.file_name().to_str()?).ok()).collect()
 }
 
 fn read_manifest(dir: &SetupDir) -> Result<SetupManifest, CoreError> {

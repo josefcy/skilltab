@@ -316,6 +316,34 @@ fn an_own_skill_with_no_folder_in_the_repo_is_named_and_the_others_still_link() 
 }
 
 #[test]
+fn an_own_skill_that_is_a_link_in_the_repo_is_named_and_never_linked() {
+    let h = Home::new();
+    setup_folder(&h, r#"{"ownSkills":["own1","own2","stray"]}"#);
+    write(&h, "elsewhere/SKILL.md", "outside the setup folder");
+    fs::remove_dir_all(h.p("repo/skills/own2")).unwrap();
+    h.link("repo/skills/own2", "elsewhere");
+    h.link("repo/skills/stray", "elsewhere");
+    let r = Rig::with_tools(h);
+    let h = &r.h;
+
+    let plan = r.plan();
+    let links: Vec<String> = plan.steps.iter().filter(|s| s.kind == StepKind::Link).map(|s| slashes(&s.detail)).collect();
+    assert_eq!(links, [".claude/skills/own1", ".agents/skills/own1"].map(|e| link_detail(h, e, "repo/skills/own1")));
+    let attention = notes(&plan, ViewNote::Attention);
+    for name in ["own2", "stray"] {
+        let named: Vec<&String> = attention.iter().filter(|n| n.contains(&format!("skills/{name} is a link"))).collect();
+        assert_eq!(named.len(), 1, "{name}: {attention:?}");
+        assert!(named[0].contains("not a folder in the setup folder") && named[0].contains("It is not linked"), "{named:?}");
+    }
+
+    assert_eq!(r.apply(&plan).outcome, ApplyOutcomeKind::Applied);
+    for skills in [".claude/skills", ".agents/skills"] {
+        assert!(!fs::symlink_metadata(h.p(&format!("{skills}/own2"))).is_ok(), "{skills}");
+        assert!(!fs::symlink_metadata(h.p(&format!("{skills}/stray"))).is_ok(), "{skills}");
+    }
+}
+
+#[test]
 fn a_cloned_repo_cannot_write_outside_the_allowlist() {
     let h = Home::new();
     setup_folder(&h, "{}");

@@ -86,9 +86,15 @@ pub(super) fn plan_restore(i: &RestoreInput, p: &mut Plan) {
 
 fn link_own_skills(i: &RestoreInput, wanted: &Wanted, p: &mut Plan) {
     let mut unnamed = BTreeSet::new();
+    for name in &i.linked_skills {
+        p.note(
+            NoteKind::Attention,
+            format!("skills/{} is a link, not a folder in the setup folder. It is not linked.", name.as_str()),
+        );
+    }
     for link in &wanted.own {
         if !i.repo_skills.contains(&link.name) {
-            if unnamed.insert(&link.name) {
+            if !i.linked_skills.contains(&link.name) && unnamed.insert(&link.name) {
                 p.note(
                     NoteKind::Attention,
                     format!(
