@@ -630,6 +630,26 @@ mod tests {
         }
 
         #[test]
+        fn a_secret_in_a_utf_16_file_blocks_the_export_as_backup_ps1_refuses_it() {
+            let h = export_home();
+            let secret = format!("ghp_{}", "a1B2".repeat(6));
+            let mut bytes = vec![0xff, 0xfe];
+            bytes.extend(format!("# Rules
+token: {secret}
+").encode_utf16().flat_map(u16::to_le_bytes));
+            std::fs::write(h.p(".claude/rules/a-rule.md"), bytes).unwrap();
+            let (app, _) = open(&h);
+
+            let plan = app.plan(&export_request(&h)).unwrap();
+            assert!(!plan.ready && plan.steps.is_empty());
+            let reasons: Vec<&String> = plan.blockers.iter().map(|b| &b.reason).collect();
+            assert!(reasons.iter().any(|r| r.contains("~/.claude/rules/a-rule.md")), "{reasons:?}");
+            assert!(reasons.iter().all(|r| !r.contains(&secret)));
+            assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Refused);
+            assert!(!h.p("repo/manifest.json").exists());
+        }
+
+        #[test]
         fn an_unreadable_or_unsupported_skill_lock_blocks_the_export() {
             for lock in [r#"{"version":2,"skills":{}}"#, "{not json"] {
                 let h = export_home();

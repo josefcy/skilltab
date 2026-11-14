@@ -22,10 +22,30 @@ static COMPILED: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
 });
 
 /// The first pattern the text matches. The pattern names the finding. The matched text is never returned,
-/// so a plan can say what was found without printing it.
+/// so a plan can say what was found without printing it. The bytes are read as UTF-8 and also as
+/// `ReadAllText` reads them, which honours a byte order mark, so a UTF-16 file cannot hide a secret.
 pub(crate) fn find_secret(bytes: &[u8]) -> Option<&'static str> {
-    let text = String::from_utf8_lossy(bytes);
-    COMPILED.iter().find(|(_, re)| re.is_match(&text)).map(|(p, _)| *p)
+    let views = [Some(String::from_utf8_lossy(bytes).into_owned()), bom_text(bytes)];
+    COMPILED.iter().find(|(_, re)| views.iter().flatten().any(|text| re.is_match(text))).map(|(p, _)| *p)
+}
+
+/// The text of bytes that start with a byte order mark, decoded as that mark says. None without one.
+fn bom_text(bytes: &[u8]) -> Option<String> {
+    let utf32 = |body: &[u8], join: fn([u8; 4]) -> u32| -> String {
+        body.as_chunks::<4>().0.iter().map(|c| char::from_u32(join(*c)).unwrap_or(char::REPLACEMENT_CHARACTER)).collect()
+    };
+    let utf16 = |body: &[u8], join: fn([u8; 2]) -> u16| -> String {
+        let units = body.as_chunks::<2>().0.iter().map(|c| join(*c));
+        char::decode_utf16(units).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)).collect()
+    };
+    match bytes {
+        [0xff, 0xfe, 0, 0, body @ ..] => Some(utf32(body, u32::from_le_bytes)),
+        [0xff, 0xfe, body @ ..] => Some(utf16(body, u16::from_le_bytes)),
+        [0xfe, 0xff, body @ ..] => Some(utf16(body, u16::from_be_bytes)),
+        [0, 0, 0xfe, 0xff, body @ ..] => Some(utf32(body, u32::from_be_bytes)),
+        [0xef, 0xbb, 0xbf, body @ ..] => Some(String::from_utf8_lossy(body).into_owned()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -59,6 +79,37 @@ mod tests {
         assert!(find_secret(b"akia0123456789abcdef").is_some());
         assert!(find_secret(format!("API_KEY={}", tail(20)).as_bytes()).is_some());
         assert!(find_secret(format!("BEARER {}", tail(24)).as_bytes()).is_some());
+    }
+
+    fn encode(text: &str, bom: &[u8], unit: impl Fn(char) -> Vec<u8>) -> Vec<u8> {
+        let mut out = bom.to_vec();
+        out.extend(text.chars().flat_map(unit));
+        out
+    }
+
+    fn utf16(c: char, big: bool) -> Vec<u8> {
+        let mut buf = [0u16; 2];
+        c.encode_utf16(&mut buf).iter().flat_map(|u| if big { u.to_be_bytes() } else { u.to_le_bytes() }).collect()
+    }
+
+    #[test]
+    fn a_secret_in_a_file_with_a_byte_order_mark_is_found_as_read_all_text_would_read_it() {
+        let text = format!("token: ghp_{}
+", tail(24));
+        let files = [
+            ("utf-8", [&[0xef, 0xbb, 0xbf][..], text.as_bytes()].concat()),
+            ("utf-16 le", encode(&text, &[0xff, 0xfe], |c| utf16(c, false))),
+            ("utf-16 be", encode(&text, &[0xfe, 0xff], |c| utf16(c, true))),
+            ("utf-32 le", encode(&text, &[0xff, 0xfe, 0, 0], |c| u32::from(c).to_le_bytes().to_vec())),
+            ("utf-32 be", encode(&text, &[0, 0, 0xfe, 0xff], |c| u32::from(c).to_be_bytes().to_vec())),
+        ];
+        for (name, bytes) in files {
+            assert_eq!(find_secret(&bytes), Some(PATTERNS[1]), "{name}");
+        }
+        let plain = encode("# Rules
+Use short sentences.
+", &[0xff, 0xfe], |c| utf16(c, false));
+        assert_eq!(find_secret(&plain), None);
     }
 
     #[test]

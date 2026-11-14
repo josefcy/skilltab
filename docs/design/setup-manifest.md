@@ -59,7 +59,7 @@ The carried files are an allowlist, one per harness:
 | Claude Code | `~/.claude/rules/*.md` | `config/claude/rules/*.md` |
 | Codex | `~/.codex/AGENTS.md` | `config/codex/AGENTS.md` |
 
-Only markdown is carried. `settings.json`, `config.toml`, `hooks.json`, auth files and sessions are never exported, and a restore ignores them if they appear in the folder. Export refuses to run when a carried file matches one of eight secret patterns, and names the file. It also refuses when `manifest.json`, `config/` or anything under it is a link (a symlink or a Windows junction), because a link in a cloned folder would carry its writes and deletes outside the setup folder.
+Only markdown is carried. `settings.json`, `config.toml`, `hooks.json`, auth files and sessions are never exported, and a restore ignores them if they appear in the folder. Export refuses to run when a carried file matches one of eight secret patterns, and names the file. The scan reads each file as UTF-8 and as `ReadAllText` would, so a file with a UTF-16 or UTF-32 byte order mark is scanned as the text it holds. It also refuses when `manifest.json`, `config/` or anything under it is a link (a symlink or a Windows junction), because a link in a cloned folder would carry its writes and deletes outside the setup folder.
 
 ## What Restore does with it
 
