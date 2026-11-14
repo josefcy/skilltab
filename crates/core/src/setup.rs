@@ -134,6 +134,8 @@ pub(crate) struct ExportInput {
     pub manifest: SetupManifest,
     /// Known marketplaces the format cannot rebuild, as (name, source type). Export leaves them out and says so.
     pub unrebuildable: Vec<(String, String)>,
+    /// Skills in the skill lock that no source can install again. Export leaves them out and says so.
+    pub unrestorable_skills: Vec<String>,
     /// An unreadable input, or a destination Export refuses. Any one of them blocks the plan.
     pub problems: Vec<Problem>,
     pub on_disk_manifest: Option<Arc<[u8]>>,
@@ -147,6 +149,7 @@ pub(crate) fn read_export(env: &Env, dir: SetupDir) -> ExportInput {
     let mut problems = Vec::new();
     let mut manifest = SetupManifest::default();
     let mut unrebuildable = Vec::new();
+    let mut unrestorable_skills = Vec::new();
 
     for harness in registry() {
         match harness.read_plugins(env) {
@@ -159,7 +162,10 @@ pub(crate) fn read_export(env: &Env, dir: SetupDir) -> ExportInput {
         }
     }
     match Provenance::load(env).skill_sources() {
-        Ok(sources) => manifest.skill_sources = sources,
+        Ok(sources) => {
+            manifest.skill_sources = sources.by_source;
+            unrestorable_skills = sources.unrestorable;
+        }
         Err(why) => problems.push(Problem::new(why)),
     }
     manifest.own_skills = own_skills(&dir, &mut problems);
@@ -182,7 +188,7 @@ pub(crate) fn read_export(env: &Env, dir: SetupDir) -> ExportInput {
             remedy: "Choose a folder outside ~/.claude, ~/.codex and ~/.agents.".to_owned(),
         });
     }
-    ExportInput { dir, manifest, unrebuildable, problems, on_disk_manifest, sources, in_repo }
+    ExportInput { dir, manifest, unrebuildable, unrestorable_skills, problems, on_disk_manifest, sources, in_repo }
 }
 
 /// How many links an export names one by one before it sums up the rest.

@@ -593,6 +593,28 @@ mod tests {
         }
 
         #[test]
+        fn a_skill_the_lock_gives_no_source_for_is_named_in_the_export_not_dropped() {
+            let h = export_home();
+            let mut lock: serde_json::Value = serde_json::from_slice(&std::fs::read(h.p(".agents/.skill-lock.json")).unwrap()).unwrap();
+            lock["skills"]["ghost"] = serde_json::json!({"sourceType": "github", "skillFolderHash": "h"});
+            lock["skills"]["zz-twin"] = serde_json::json!({"source": "ACME/SKILLS", "sourceType": "github"});
+            std::fs::write(h.p(".agents/.skill-lock.json"), lock.to_string()).unwrap();
+            let (app, _) = open(&h);
+
+            let plan = app.plan(&export_request(&h)).unwrap();
+            assert!(plan.ready, "{:?}", plan.blockers.iter().map(|b| &b.reason).collect::<Vec<_>>());
+            let attention = notes_of(&plan, view::NoteKind::Attention);
+            let ghost: Vec<&String> = attention.iter().filter(|n| n.contains("ghost")).collect();
+            assert_eq!(ghost.len(), 1, "{attention:?}");
+            assert!(ghost[0].contains("no source") && ghost[0].contains("manifest.json"), "{ghost:?}");
+
+            app.apply(&plan.id).unwrap();
+            let manifest = std::fs::read_to_string(h.p("repo/manifest.json")).unwrap();
+            assert!(!manifest.contains("ghost"), "{manifest}");
+            assert!(manifest.contains(r#"{ "source": "acme/skills", "skills": ["Upper", "s-one", "s-two", "zz-twin"] }"#), "{manifest}");
+        }
+
+        #[test]
         fn export_takes_a_home_relative_folder_and_refuses_one_that_is_not_a_full_path() {
             let h = export_home();
             let (app, _) = open(&h);

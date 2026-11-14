@@ -12,6 +12,8 @@ use std::path::Path;
 
 pub struct Provenance {
     lock: HashMap<String, LockEntry>,
+    /// Every lock entry, with the source that installs it again. One without a source reads as None.
+    install: BTreeMap<String, Option<String>>,
     synced: HashMap<String, String>,
     agents_skills: String,
     claude_skills: String,
@@ -22,33 +24,37 @@ pub struct Provenance {
 
 struct LockEntry {
     source: String,
-    source_type: Option<String>,
     source_url: Option<String>,
-    source_base_url: Option<String>,
     git_ref: Option<String>,
     skill_folder_hash: String,
 }
 
-impl LockEntry {
-    /// The source `npx skills add` is given to install this skill again, chosen as `backup.ps1` chooses it.
-    /// PowerShell compares strings without regard to case, and an absent type is not "github".
-    fn install_source(&self) -> &str {
-        let is = |kind: &str| self.source_type.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(kind));
-        fn set(o: &Option<String>) -> Option<&str> {
-            o.as_deref().filter(|s| !s.is_empty())
-        }
-        if is("well-known")
-            && let Some(base) = set(&self.source_base_url)
-        {
-            base
-        } else if !is("github")
-            && let Some(url) = set(&self.source_url)
-        {
-            url
-        } else {
-            &self.source
-        }
+/// The source `npx skills add` is given to install a skill again, chosen as `backup.ps1` chooses it. PowerShell
+/// compares strings without regard to case, and an absent type is not "github". None when nothing names a source.
+fn install_source(source: Option<&str>, kind: Option<&str>, url: Option<&str>, base_url: Option<&str>) -> Option<String> {
+    fn set(v: Option<&str>) -> Option<&str> {
+        v.filter(|s| !s.is_empty())
     }
+    let is = |wanted: &str| kind.is_some_and(|k| k.eq_ignore_ascii_case(wanted));
+    if is("well-known")
+        && let Some(base) = set(base_url)
+    {
+        Some(base.to_owned())
+    } else if !is("github")
+        && let Some(url) = set(url)
+    {
+        Some(url.to_owned())
+    } else {
+        source.map(str::to_owned)
+    }
+}
+
+/// The lock's skills grouped for a manifest, and the ones no source can install again.
+#[derive(Debug)]
+pub(crate) struct SkillSources {
+    pub by_source: BTreeMap<Arg, BTreeSet<FolderName>>,
+    /// Skills whose lock entry has no source and no url, so a restore cannot install them. Sorted.
+    pub unrestorable: Vec<String>,
 }
 
 const LOCK_VERSION: i64 = 3;
@@ -61,6 +67,7 @@ impl Provenance {
         let claude_skills = env.home.join(".claude").join("skills");
         let mut p = Provenance {
             lock: HashMap::new(),
+            install: BTreeMap::new(),
             synced: HashMap::new(),
             agents_skills: norm_key(&agents_dir.join("skills")),
             claude_skills: norm_key(&claude_skills),
@@ -79,19 +86,24 @@ impl Provenance {
     /// The lock's skills grouped by the source that installs them again, as `backup.ps1` groups them.
     /// Err when the lock exists but is unreadable or not v3, so Export never writes a manifest from half a machine.
     /// No lock is no sources.
-    pub(crate) fn skill_sources(&self) -> Result<BTreeMap<Arg, BTreeSet<FolderName>>, String> {
+    pub(crate) fn skill_sources(&self) -> Result<SkillSources, String> {
         if let Some(e) = &self.lock_error {
             return Err(e.clone());
         }
-        let mut names: Vec<&String> = self.lock.keys().collect();
-        names.sort();
-        let mut out: BTreeMap<Arg, BTreeSet<FolderName>> = BTreeMap::new();
-        for name in names {
-            let source = Arg::parse(self.lock[name].install_source()).map_err(|e| format!("The source of skill {name} is not usable: {e}."))?;
+        // The script keys a case-insensitive hashtable, so two spellings are one source and the first one stays.
+        // Skills come by name because a parsed lock does not keep the order of its keys.
+        let mut groups: BTreeMap<String, (Arg, BTreeSet<FolderName>)> = BTreeMap::new();
+        let mut unrestorable = Vec::new();
+        for (name, source) in &self.install {
+            let Some(source) = source else {
+                unrestorable.push(name.clone());
+                continue;
+            };
+            let arg = Arg::parse(source).map_err(|e| format!("The source of skill {name} is not usable: {e}."))?;
             let skill = FolderName::parse(name).map_err(|e| format!("A skill name in the skill lock is not usable: {e}."))?;
-            out.entry(source).or_default().insert(skill);
+            groups.entry(source.to_lowercase()).or_insert_with(|| (arg, BTreeSet::new())).1.insert(skill);
         }
-        Ok(out)
+        Ok(SkillSources { by_source: groups.into_values().collect(), unrestorable })
     }
 
     /// Order matters. The first match wins:
@@ -157,17 +169,13 @@ impl Provenance {
         let Some(skills) = json.get("skills").and_then(|s| s.as_object()) else { return };
         for (name, v) in skills {
             let text = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
-            let Some(source) = text("source") else { continue };
+            let (source, source_url) = (text("source"), text("sourceUrl"));
+            let install = install_source(source.as_deref(), text("sourceType").as_deref(), source_url.as_deref(), text("sourceBaseUrl").as_deref());
+            self.install.insert(name.clone(), install);
+            let Some(source) = source else { continue };
             self.lock.insert(
                 name.clone(),
-                LockEntry {
-                    source,
-                    source_type: text("sourceType"),
-                    source_url: text("sourceUrl"),
-                    source_base_url: text("sourceBaseUrl"),
-                    git_ref: text("ref"),
-                    skill_folder_hash: text("skillFolderHash").unwrap_or_default(),
-                },
+                LockEntry { source, source_url, git_ref: text("ref"), skill_folder_hash: text("skillFolderHash").unwrap_or_default() },
             );
         }
     }
@@ -245,7 +253,7 @@ mod tests {
     }
 
     fn grouped(p: &Provenance) -> Vec<(String, Vec<String>)> {
-        let sources = p.skill_sources().unwrap();
+        let sources = p.skill_sources().unwrap().by_source;
         sources.iter().map(|(k, v)| (k.as_str().to_owned(), v.iter().map(|n| n.as_str().to_owned()).collect())).collect()
     }
 
@@ -263,15 +271,17 @@ mod tests {
                 "gitty":{"source":"ignored","sourceType":"git","sourceUrl":"https://example.test/g.git"},
                 "untyped":{"source":"plain/src","sourceUrl":"https://example.test/u.git"},
                 "empty-url":{"source":"plain/empty","sourceType":"git","sourceUrl":""},
-                "nosource":{"sourceType":"git","sourceUrl":"https://example.test/skipped.git"}}}"#,
+                "nosource":{"sourceType":"git","sourceUrl":"https://example.test/skipped.git"},
+                "nosource-wk":{"sourceType":"well-known","sourceBaseUrl":"https://example.test"}}}"#,
         );
         let group = |source: &str, names: &[&str]| (source.to_owned(), names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>());
         assert_eq!(
             grouped(&p),
             [
                 group("acme/skills", &["Upper", "s-one", "s-two"]),
-                group("https://example.test", &["wk"]),
+                group("https://example.test", &["nosource-wk", "wk"]),
                 group("https://example.test/g.git", &["gitty"]),
+                group("https://example.test/skipped.git", &["nosource"]),
                 group("https://example.test/u.git", &["untyped"]),
                 group("https://example.test/y", &["wk-bare"]),
                 group("plain/empty", &["empty-url"]),
@@ -280,9 +290,40 @@ mod tests {
     }
 
     #[test]
+    fn sources_that_differ_only_in_case_are_one_source_named_as_the_first_skill_spells_it() {
+        let t = tempfile::tempdir().unwrap();
+        let spelled = |first: &str, second: &str| {
+            let text = format!(
+                r#"{{"version":3,"skills":{{"a-skill":{{"source":"{first}","sourceType":"github"}},"b-skill":{{"source":"{second}","sourceType":"github"}},"c-skill":{{"source":"other/src","sourceType":"github"}}}}}}"#
+            );
+            grouped(&lock(t.path(), &text))
+        };
+        let group = |source: &str, names: &[&str]| (source.to_owned(), names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>());
+        assert_eq!(spelled("Acme/Skills", "acme/skills"), [group("Acme/Skills", &["a-skill", "b-skill"]), group("other/src", &["c-skill"])]);
+        assert_eq!(spelled("acme/skills", "ACME/SKILLS"), [group("acme/skills", &["a-skill", "b-skill"]), group("other/src", &["c-skill"])]);
+    }
+
+    #[test]
+    fn a_lock_entry_with_no_usable_source_is_named_not_dropped() {
+        let t = tempfile::tempdir().unwrap();
+        let p = lock(
+            t.path(),
+            r#"{"version":3,"skills":{
+                "kept":{"source":"acme/skills","sourceType":"github"},
+                "nothing":{},
+                "github-url-only":{"sourceType":"github","sourceUrl":"https://example.test/x.git"},
+                "empty-url":{"sourceType":"git","sourceUrl":""},
+                "wk-no-base":{"sourceType":"well-known","sourceUrl":""}}}"#,
+        );
+        let sources = p.skill_sources().unwrap();
+        assert_eq!(sources.unrestorable, ["empty-url", "github-url-only", "nothing", "wk-no-base"]);
+        assert_eq!(grouped(&p), [("acme/skills".to_owned(), vec!["kept".to_owned()])]);
+    }
+
+    #[test]
     fn no_lock_is_no_sources_but_a_lock_that_cannot_be_read_is_an_error() {
         let t = tempfile::tempdir().unwrap();
-        assert!(Provenance::load(&env(t.path())).skill_sources().unwrap().is_empty());
+        assert!(Provenance::load(&env(t.path())).skill_sources().unwrap().by_source.is_empty());
         for text in [r#"{"version":2,"skills":{"a":{"source":"x/y"}}}"#, "{not json", r#"{"skills":{}}"#] {
             let e = lock(t.path(), text).skill_sources().unwrap_err();
             assert!(e.contains(".skill-lock.json"), "{e}");

@@ -27,6 +27,12 @@ pub(super) fn plan_export(i: &ExportInput, p: &mut Plan) {
             format!("Marketplace {name} has a source of type \"{kind}\", which restore cannot rebuild. It is left out of manifest.json."),
         );
     }
+    for name in &i.unrestorable_skills {
+        p.note(
+            NoteKind::Attention,
+            format!("Skill {name} is in the skill lock with no source and no url, so a restore cannot install it. It is left out of manifest.json."),
+        );
+    }
     for problem in &i.problems {
         p.block(Blocker::Unsupported { why: problem.why.clone(), remedy: problem.remedy.clone() });
     }
