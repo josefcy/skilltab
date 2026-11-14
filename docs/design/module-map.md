@@ -57,6 +57,7 @@ A plan has `notes` of kind Present, Attention and Manual. A present item has no 
 | Detail pane | `getSkill`, rendered `skillMd`, a mount chain diagram from `MountDetail.chain`, and a usage chart from `series`. |
 | Action dialog (one component for every action) | `planAction` → render steps, effects and blockers → `applyPlan`. It is the only place that calls `applyPlan`. |
 | Bulk selection | A set of row ids in `App`, pruned on every rescan. The bar above the table sends one `{ kind: "deleteBodies", skills }` to the action dialog, which lists the plan's `skipped` skills apart from its steps. |
+| Setup tab (`SetupPanel`) | One folder field, remembered per viewer in `localStorage`. Export… and Restore… send `exportSetup` or `restoreSetup` with that folder to the action dialog. The dialog shows the plan's notes in three blocks and keeps the attention and sign-in notes after an apply. |
 | Shelf, broken links, ghosts tabs | Fields of `Inventory`. Restore and remove go through the action dialog. |
 
 ## Persisted state, one owner each
