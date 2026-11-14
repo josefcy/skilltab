@@ -114,7 +114,7 @@ impl Harness for ClaudeCode {
                         continue;
                     }
                 };
-                let name = Arg::parse(name).map_err(|e| format!("A marketplace name in {} {e}.", known.display()))?;
+                let name = Arg::parse(name).map_err(|e| format!("{}: the marketplace name {e}.", known.display()))?;
                 record.marketplaces.insert(name, source);
             }
         }
@@ -124,7 +124,7 @@ impl Harness for ClaudeCode {
             && let Some(map) = json.get("enabledPlugins").and_then(|e| e.as_object())
         {
             for key in map.iter().filter(|(_, v)| v.as_bool() == Some(true)).map(|(k, _)| k) {
-                record.enabled.insert(Arg::parse(key).map_err(|e| format!("A plugin in {} {e}.", settings.display()))?);
+                record.enabled.insert(Arg::parse(key).map_err(|e| format!("{}: the plugin {e}.", settings.display()))?);
             }
         }
 

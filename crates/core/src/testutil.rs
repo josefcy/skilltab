@@ -23,6 +23,20 @@ pub(crate) fn unlink(entry: &Path) {
     fs::remove_file(entry).unwrap();
 }
 
+/// Copies the files and folders under `from` into `to`, byte for byte.
+pub(crate) fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for item in fs::read_dir(from).unwrap() {
+        let item = item.unwrap();
+        let target = to.join(item.file_name());
+        if item.file_type().unwrap().is_dir() {
+            copy_tree(&item.path(), &target);
+        } else {
+            fs::copy(item.path(), target).unwrap();
+        }
+    }
+}
+
 pub(crate) struct Home {
     _guard: tempfile::TempDir,
     pub root: PathBuf,

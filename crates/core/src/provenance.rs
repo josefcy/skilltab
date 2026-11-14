@@ -87,8 +87,8 @@ impl Provenance {
         names.sort();
         let mut out: BTreeMap<Arg, BTreeSet<FolderName>> = BTreeMap::new();
         for name in names {
-            let source = Arg::parse(self.lock[name].install_source()).map_err(|e| format!("The source of skill {name} {e}."))?;
-            let skill = FolderName::parse(name).map_err(|e| format!("A skill name in the skill lock {e}."))?;
+            let source = Arg::parse(self.lock[name].install_source()).map_err(|e| format!("The source of skill {name} is not usable: {e}."))?;
+            let skill = FolderName::parse(name).map_err(|e| format!("A skill name in the skill lock is not usable: {e}."))?;
             out.entry(source).or_default().insert(skill);
         }
         Ok(out)
