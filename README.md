@@ -2,7 +2,7 @@
 
 skilltab is a Windows desktop app that lists every agent skill on your machine in one table, for every harness that has one. Claude Code and Codex are supported today. For each skill it shows where each harness loads it from, who put it there, how often you use it, and which plugin or install record it came from. You can disable, restore, remove, or delete a skill. Every change opens a plan first and runs only after you confirm.
 
-![The skills table with a skill selected](docs/screens/usage-wired.png)
+![Four skills selected for deletion, with a plugin skill skipped](docs/screens/bulk-delete.png)
 
 ## What it shows
 
@@ -22,8 +22,6 @@ skilltab is a Windows desktop app that lists every agent skill on your machine i
 | Delete everywhere | Removes every link and sends the real folder to the Recycle Bin. |
 | Delete several | Tick skills in the table and choose Delete…. One plan covers all of them. A skill that is part of a plugin, ships with the harness, or is rewritten by claude.ai sync is listed as skipped, and the rest go ahead. |
 | Enable or disable plugin | Runs `claude plugin enable` or `claude plugin disable`. Codex has no such command, so the plan says it is unsupported. |
-
-![Four skills selected for deletion, with a plugin skill skipped](docs/screens/bulk-delete.png)
 
 A plan is refused with a reason and a remedy in these cases:
 
