@@ -122,8 +122,8 @@ pub struct SkillBody {
     pub id: SkillId,
     pub dir: RealDir,
     pub manifest: Manifest,
-    /// Tree hash over the folder's files (path + bytes), sorted. Used for jstack drift and
-    /// to spot two bodies that are byte-identical copies.
+    /// Tree hash over the folder's files (path + bytes), sorted. Used to spot two bodies that are
+    /// byte-identical copies, and to check a folder is unchanged before it is moved or recycled.
     pub content_hash: ContentHash,
     pub origin: Origin,
     /// Not empty: a body exists in the snapshot only because some harness mounts it.
@@ -153,8 +153,6 @@ pub enum ManifestIssue {
 /// Where the folder's contents came from. One answer per body, decided by provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
-    /// The real folder sits inside the jstack clone (`jstack/skills/<name>`).
-    JstackRepo { skill: String },
     /// Installed by the `skills` CLI. Facts copied from ~/.agents/.skill-lock.json.
     SkillsCli { source: String, source_url: Option<String>, git_ref: Option<String>, lock_hash: String },
     Plugin { bundle: BundleId },
@@ -193,8 +191,6 @@ pub enum Scope {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ownership {
-    /// Listed in ~/.jstack-links.txt. jstack's sync recreates it at the next session start.
-    JstackSync,
     /// Made by the `skills` CLI (the lock file names it).
     SkillsCli,
     PluginManager { bundle: BundleId },

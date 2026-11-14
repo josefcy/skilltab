@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActionDialog } from "./ActionDialog";
 import type { ActionRequest } from "./bindings";
 import { Detail } from "./Detail";
-import { JstackPanel } from "./JstackPanel";
 import { BrokenPanel, BundlesPanel, ConflictsPanel, ShelfPanel } from "./Panels";
 import { SkillTable } from "./SkillTable";
 import { Toolbar } from "./Toolbar";
@@ -10,9 +9,9 @@ import { UsagePanel } from "./UsagePanel";
 import { filterAndSort, NO_FILTERS, type Filters, type Sort, type SortKey } from "./filters";
 import { hueMap, HueProvider } from "./ui";
 import { useInventory } from "./useInventory";
-import { useAliasSuggestions, useJstack } from "./useSideData";
+import { useAliasSuggestions } from "./useSideData";
 
-type Tab = "skills" | "jstack" | "usage" | "shelf" | "bundles" | "conflicts" | "broken";
+type Tab = "skills" | "usage" | "shelf" | "bundles" | "conflicts" | "broken";
 
 export default function App() {
   const { inventory: inv, error, firstLoadMs, refresh, refreshing } = useInventory();
@@ -23,7 +22,6 @@ export default function App() {
   const [action, setAction] = useState<ActionRequest | null>(null);
   const closeAction = useCallback(() => setAction(null), []);
   const searchRef = useRef<HTMLInputElement | null>(null);
-  const jstack = useJstack(inv?.revision ?? 0);
   const suggestions = useAliasSuggestions(inv?.revision ?? 0);
 
   const rows = useMemo(() => (inv ? filterAndSort(inv.rows, filters, sort) : []), [inv, filters, sort]);
@@ -90,11 +88,9 @@ export default function App() {
     return <main className="boot">{error ? <p className="error">Could not read the inventory: {error}</p> : <p className="sub">Scanning skills…</p>}</main>;
   }
 
-  const jstackDrifted = jstack?.relations.filter((r) => r.relation.drifted).length ?? 0;
   const stillThere = selected && inv.rows.some((r) => r.id === selected) ? selected : null;
   const tabs: { id: Tab; label: string; n: number }[] = [
     { id: "skills", label: "Skills", n: inv.rows.length },
-    { id: "jstack", label: "jstack", n: jstack?.relations.length ?? 0 },
     { id: "usage", label: "Usage history", n: suggestions?.length ?? 0 },
     { id: "shelf", label: "Shelf", n: inv.shelf.length },
     { id: "bundles", label: "Bundles", n: inv.bundles.length },
@@ -112,7 +108,7 @@ export default function App() {
               type="button"
               role="tab"
               aria-selected={tab === t.id}
-              className={(t.n > 0 && (t.id === "broken" || t.id === "conflicts")) || (t.id === "jstack" && jstackDrifted > 0) ? "attn" : undefined}
+              className={t.n > 0 && (t.id === "broken" || t.id === "conflicts") ? "attn" : undefined}
               onClick={() => setTab(t.id)}
             >
               {t.label}
@@ -149,7 +145,6 @@ export default function App() {
             </div>
           </>
         )}
-        {tab === "jstack" && <JstackPanel jstack={jstack} onManage={setAction} onPick={showSkill} />}
         {tab === "usage" && <UsagePanel suggestions={suggestions} confirmed={inv.aliases} onPick={showSkill} />}
         {tab === "shelf" && <ShelfPanel shelf={inv.shelf} onManage={setAction} />}
         {tab === "bundles" && <BundlesPanel bundles={inv.bundles} onPick={showBundle} onManage={setAction} />}

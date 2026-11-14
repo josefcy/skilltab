@@ -395,9 +395,6 @@ table.grid {
 .c-origin {
   width: 100px;
 }
-.c-jstack {
-  width: 110px;
-}
 .c-uses {
   width: 74px;
 }
@@ -1116,53 +1113,10 @@ table.usage {
   }
 }
 
-/* jstack and usage history */
-.grow {
-  flex: 1;
-  min-width: 0;
-}
-
-.jbadges {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 6px;
-  vertical-align: baseline;
-}
-
-.jbadge {
-  padding: 0 5px;
-  border-radius: 3px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
+/* usage history */
 .jline {
   margin: 0 0 6px;
   overflow-wrap: anywhere;
-}
-
-.jfacts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 8px 18px;
-  margin: 8px 0;
-}
-
-.jfacts dt {
-  color: var(--muted);
-  font-size: 11.5px;
-}
-
-.jfacts dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.jfacts .rowaction {
-  margin-left: 8px;
 }
 
 .jactions {
@@ -1171,46 +1125,6 @@ table.usage {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
-}
-
-.jgroup + .jgroup {
-  margin-top: 6px;
-}
-
-.jgroup-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 8px 0 2px;
-}
-
-.jgroup-head .chip {
-  margin: 0;
-}
-
-.jrow {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 3px 6px;
-}
-
-.jrow .sub,
-.rowbtn .sub.grow {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.jskills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 0;
-}
-
-.jskill.missing {
-  color: var(--warn);
 }
 
 .alist {

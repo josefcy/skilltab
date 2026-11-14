@@ -13,10 +13,6 @@ export const commands = {
 	planAction: (action: ActionRequest, options?: InvokeOptions) => typedError<PlanView, CoreError>(__TAURI_INVOKE("plan_action", { action }, options)),
 	/**  Apply ends with a rescan, so the UI hears about the new revision like after any refresh. */
 	applyPlan: (planId: string, options?: InvokeOptions) => typedError<ApplyReport, CoreError>(__TAURI_INVOKE("apply_plan", { planId }, options)),
-	/**  None when the machine has no jstack clone. Reads the last refresh and runs no git. */
-	getJstack: (options?: InvokeOptions) => __TAURI_INVOKE<JstackView | null>("get_jstack", undefined, options),
-	/**  The one jstack call that reaches the network. It rescans, so the UI hears about the new revision. */
-	jstackFetch: (options?: InvokeOptions) => typedError<RefreshReport, CoreError>(__TAURI_INVOKE("jstack_fetch", undefined, options)),
 	aliasSuggestions: (options?: InvokeOptions) => __TAURI_INVOKE<AliasSuggestionView[]>("alias_suggestions", undefined, options),
 	confirmAlias: (harness: string, from: string, to: string, options?: InvokeOptions) => typedError<RefreshReport, CoreError>(__TAURI_INVOKE("confirm_alias", { harness, from, to }, options)),
 	/**  Confirm-all sends every shown suggestion at once, so it costs one rescan. */
@@ -30,20 +26,8 @@ export const events = {
 };
 
 /* Types */
-export type AbsenceKind = 
-/**  Nothing there answers to the name, so a sync links it. */
-"absent" | 
-/**  Another skill has the name, and a sync keeps that one. */
-"nameTaken";
-
 /**  A change the UI asks for. It names things only by ids the core issued, never by path. */
-export type ActionRequest = { kind: "removeMount"; mount: string } | { kind: "deleteBody"; skill: string } | { kind: "disable"; mount: string } | { kind: "restore"; shelf: string } | { kind: "bundleEnable"; bundle: string } | { kind: "bundleDisable"; bundle: string } | 
-/**  Run jstack's own sync-skills.ps1. */
-{ kind: "jstackSync" } | 
-/**  A fast-forward pull in the jstack clone. */
-{ kind: "jstackPull" } | 
-/**  Install, or update, skills from one line of skill-sources.txt. Both must be declared there. */
-{ kind: "jstackInstallDeclared"; source: string; skills: string[] };
+export type ActionRequest = { kind: "removeMount"; mount: string } | { kind: "deleteBody"; skill: string } | { kind: "disable"; mount: string } | { kind: "restore"; shelf: string } | { kind: "bundleEnable"; bundle: string } | { kind: "bundleDisable"; bundle: string };
 
 /**  One suggestion to confirm, as `confirm_aliases` takes it. The strings are the wire forms from `AliasSuggestionView`. */
 export type AliasPick = {
@@ -96,7 +80,7 @@ export type ApplyReport = {
 	revision: number,
 };
 
-export type BlockerKind = "recreatedBy" | "partOfBundle" | "sharedBody" | "insideJstackRepo" | "harnessBuiltin" | "unsupported";
+export type BlockerKind = "recreatedBy" | "partOfBundle" | "sharedBody" | "harnessBuiltin" | "unsupported";
 
 export type BlockerView = {
 	kind: BlockerKind,
@@ -132,20 +116,6 @@ export type CoreError = { kind: "unknownId"; id: string } | { kind: "io"; messag
 /**  The request was well formed but cannot be done, such as aliasing a key that still resolves. */
 { kind: "invalid"; message: string };
 
-export type DeclaredRow = {
-	source: string,
-	skills: DeclaredSkill[],
-	/**  The ones no installed skills-CLI folder provides. This is what Install missing sends. */
-	missing: string[],
-};
-
-export type DeclaredSkill = {
-	name: string,
-	installed: boolean,
-};
-
-export type DriftKind = "inSync" | "uncommittedEdits" | "behind" | "diverged" | "contentDiffers";
-
 export type EffectView = {
 	harness: Tag | null,
 	text: string,
@@ -166,8 +136,6 @@ export type Facets = {
 	bundles: FacetValue[],
 	owners: FacetValue[],
 	origins: FacetValue[],
-	/**  Empty when there is no jstack clone. Ids: owned, copyOf, declared, drifted. */
-	jstack: FacetValue[],
 };
 
 export type Field = {
@@ -214,65 +182,6 @@ export type InventoryChanged = {
 	revision: number,
 };
 
-export type JstackKind = 
-/**  The body is the repo folder itself, reached through a junction. */
-"owned" | 
-/**  A separate folder with the same name as a repo skill. */
-"copyOf" | 
-/**  Listed in skill-sources.txt and installed by the skills CLI. */
-"declared";
-
-export type JstackRelationRow = {
-	/**  The body's id, for jumping to it in the inventory. */
-	skillId: string,
-	name: string,
-	harnesses: Tag[],
-	relation: JstackRelationView,
-};
-
-export type JstackRelationView = {
-	kind: JstackKind,
-	/**  The skill's name in the repo or in skill-sources.txt. */
-	skill: string,
-	source: string | null,
-	drift: DriftKind,
-	/**  Anything but in sync. */
-	drifted: boolean,
-	/**  Badge text: owned, copy or declared. */
-	label: string,
-	/**  Badge text for the drift, None when in sync. */
-	driftLabel: string | null,
-	/**  One sentence for the detail pane. */
-	note: string,
-	/**  Repo-relative files that differ from HEAD, for uncommitted edits. */
-	files: string[],
-};
-
-export type JstackRepoView = {
-	root: string,
-	remote: string | null,
-	/**  None on a detached HEAD. */
-	branch: string | null,
-	head: string,
-	upstream: UpstreamView | null,
-	/**  When the clone last fetched or pulled. Ahead and behind are as old as this. */
-	fetchedAt: string | null,
-	/**  Repo-relative paths under skills/ that differ from HEAD. */
-	dirty: string[],
-	skillCount: number,
-	canSync: boolean,
-};
-
-/**  The jstack tab: the clone's state and everything that relates this machine to it. */
-export type JstackView = {
-	repo: JstackRepoView,
-	/**  Installed bodies that relate to the repo, ordered by skill name. */
-	relations: JstackRelationRow[],
-	/**  Repo skills a present harness does not have. */
-	notInstalled: NotInstalledRow[],
-	declared: DeclaredRow[],
-};
-
 export type MountDetail = {
 	summary: MountSummary,
 	ownerNote: string,
@@ -297,16 +206,6 @@ export type NameConflict = {
 	name: string,
 	identicalContent: boolean,
 	members: ConflictMember[],
-};
-
-export type NotInstalledRow = {
-	harness: Tag,
-	skill: string,
-	reason: AbsenceKind,
-	/**  The body that holds the name, when another skill already has it. */
-	takenBy: string | null,
-	/**  One sentence, shown on the row. */
-	note: string,
 };
 
 export type OriginView = {
@@ -388,8 +287,6 @@ export type SkillRow = {
 	mounts: MountSummary[],
 	usage: UsageSummary,
 	flags: Flag[],
-	/**  How this body relates to your jstack repo. None when there is no clone or no relation. */
-	jstack: JstackRelationView | null,
 };
 
 export type StepKind = "removeLink" | "recycle" | "stash" | "relink" | "unstash" | "run";
@@ -419,12 +316,6 @@ export type Tag = {
 export type TrackingView = {
 	harness: Tag,
 	since: string,
-};
-
-export type UpstreamView = {
-	name: string,
-	ahead: number,
-	behind: number,
 };
 
 export type UsageSummary = {

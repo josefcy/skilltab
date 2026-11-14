@@ -13,7 +13,7 @@ use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-pub(crate) use hash::{content_hash, content_hash_of};
+pub(crate) use hash::content_hash;
 pub(crate) use resolve::still_link_to;
 
 /// Full rescan. About 300 entries and their SKILL.md files: it runs in milliseconds, so there is no inventory cache.
@@ -25,8 +25,7 @@ pub(crate) use resolve::still_link_to;
 /// 3. Body identity = file id of the terminal dir. Entries that reach the same file id
 ///    share one SkillBody. This is where the 2-3 paths per skill collapse into one row.
 /// 4. Per body: parse the frontmatter, compute content_hash, take the origin from provenance.
-/// 5. Per mount: the owner comes from the harness hint, refined by provenance (jstack link
-///    list, skills lock). Invocation keys come from the Naming and the manifest name, plus
+/// 5. Per mount: the owner comes from the harness hint, refined by provenance (skills lock). Invocation keys come from the Naming and the manifest name, plus
 ///    SkillFile(canonical SKILL.md).
 /// 6. Shadowing: within one harness, two mounts with the same Name key means the
 ///    harness keeps one: the lowest `EntryFact::rank`. The others become Shadowed.
@@ -368,13 +367,13 @@ mod tests {
             assert!(out.status.success(), "mklink failed: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         }
         fn env(&self) -> Env {
-            Env { home: self.root.clone(), projects: vec![], jstack_root: Some(self.p("repo")) }
+            Env { home: self.root.clone(), projects: vec![] }
         }
     }
 
     fn run(t: &Tree, harnesses: &[&dyn Harness]) -> Snapshot {
         let env = t.env();
-        let prov = Provenance::load(&env, env.jstack_root.as_deref());
+        let prov = Provenance::load(&env);
         scan(&env, harnesses, &[], &prov, Vec::new(), 1)
     }
 
@@ -405,7 +404,7 @@ mod tests {
         let body = snap.bodies.values().next().unwrap();
         assert_eq!(norm_key(body.dir.as_path()), norm_key(&t.p("repo/skills/x")));
         assert_eq!(body.mounts.len(), 2);
-        assert_eq!(body.origin, Origin::JstackRepo { skill: "x".into() });
+        assert_eq!(body.origin, Origin::Unknown);
 
         let claude_mount = snap.mounts.values().find(|m| m.harness == HarnessId::CLAUDE_CODE).unwrap();
         let codex_mount = snap.mounts.values().find(|m| m.harness == HarnessId::CODEX).unwrap();

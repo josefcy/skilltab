@@ -1,21 +1,17 @@
 //! Answers "where did this folder come from" and "who made this link", from the record
 //! files other tools keep. skilltab reads these files and never writes them.
 //!   ~/.agents/.skill-lock.json (v3)    skills CLI installs
-//!   ~/.jstack-links.txt                junctions that jstack's sync owns and recreates
-//!   jstack clone path                  bodies inside it are Origin::JstackRepo
 //!   ~/.claude/skills/synced/*/manifest.json
 //! Plugin and harness-builtin facts come from the harness's own discovery.
 
 use crate::fsutil;
 use crate::model::*;
 use crate::Env;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct Provenance {
     lock: HashMap<String, LockEntry>,
-    jstack_links: HashSet<String>,
-    jstack_skills_dir: Option<String>,
     synced: HashMap<String, String>,
     agents_skills: String,
     claude_skills: String,
@@ -34,23 +30,17 @@ const LOCK_VERSION: i64 = 3;
 impl Provenance {
     /// A missing or unreadable file means "no facts from it". It never fails the scan.
     /// A lock version other than 3 is read as no facts, and a ScanIssue is raised.
-    pub fn load(env: &Env, jstack_root: Option<&Path>) -> Provenance {
+    pub fn load(env: &Env) -> Provenance {
         let agents_dir = env.home.join(".agents");
         let claude_skills = env.home.join(".claude").join("skills");
         let mut p = Provenance {
             lock: HashMap::new(),
-            jstack_links: HashSet::new(),
-            jstack_skills_dir: jstack_root.map(|r| {
-                let skills = r.join("skills");
-                norm_key(&std::fs::canonicalize(&skills).unwrap_or(skills))
-            }),
             synced: HashMap::new(),
             agents_skills: norm_key(&agents_dir.join("skills")),
             claude_skills: norm_key(&claude_skills),
             issues: Vec::new(),
         };
         p.load_lock(&agents_dir.join(".skill-lock.json"));
-        p.load_jstack_links(&env.home.join(".jstack-links.txt"));
         p.load_synced(&claude_skills.join("synced"));
         p
     }
@@ -60,16 +50,10 @@ impl Provenance {
     }
 
     /// Order matters. The first match wins:
-    /// inside the jstack skills dir > synced manifest > plugin (from the harness fact) >
+    /// synced manifest > plugin (from the harness fact) >
     /// skills lock (by folder name under ~/.agents/skills) > Unknown.
     pub fn origin(&self, dir: &RealDir, harness_fact: Option<&Origin>) -> Origin {
         let key = norm_key(dir.as_path());
-        if let Some(root) = &self.jstack_skills_dir {
-            if let Some(rest) = key.strip_prefix(root.as_str()).and_then(|r| r.strip_prefix('\\')) {
-                let skill = rest.split('\\').next().unwrap_or(rest);
-                return Origin::JstackRepo { skill: skill.to_owned() };
-            }
-        }
         if let Some(skill_id) = self.synced.get(&key) {
             return Origin::ClaudeAiSync { skill_id: skill_id.clone() };
         }
@@ -91,9 +75,6 @@ impl Provenance {
     pub fn owner(&self, entry: &Path, hint: Ownership) -> Ownership {
         if hint != Ownership::Unmanaged {
             return hint;
-        }
-        if self.jstack_links.contains(&norm_key(entry)) {
-            return Ownership::JstackSync;
         }
         if self.lock_entry_for(entry, &self.agents_skills).is_some()
             || self.lock_entry_for(entry, &self.claude_skills).is_some()
@@ -139,16 +120,6 @@ impl Provenance {
         }
     }
 
-    fn load_jstack_links(&mut self, path: &Path) {
-        match fsutil::read_text(path) {
-            Ok(Some(text)) => {
-                self.jstack_links = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| norm_key(Path::new(l))).collect();
-            }
-            Ok(None) => {}
-            Err(e) => self.problem(path, e.to_string()),
-        }
-    }
-
     fn load_synced(&mut self, synced: &Path) {
         let dirs = match std::fs::read_dir(synced) {
             Ok(d) => d,
@@ -183,19 +154,7 @@ mod tests {
     use std::fs;
 
     fn env(home: &Path) -> Env {
-        Env { home: home.to_path_buf(), projects: vec![], jstack_root: None }
-    }
-
-    #[test]
-    fn jstack_links_file_with_bom_marks_listed_entries_only() {
-        let t = tempfile::tempdir().unwrap();
-        let listed = t.path().join(".agents").join("skills").join("a");
-        let other = t.path().join(".agents").join("skills").join("b");
-        fs::write(t.path().join(".jstack-links.txt"), format!("\u{feff}{}\r\n", listed.display())).unwrap();
-        let p = Provenance::load(&env(t.path()), None);
-        assert_eq!(p.owner(&listed, Ownership::Unmanaged), Ownership::JstackSync);
-        assert_eq!(p.owner(&other, Ownership::Unmanaged), Ownership::Unmanaged);
-        assert_eq!(p.owner(&listed, Ownership::HarnessBuiltin), Ownership::HarnessBuiltin);
+        Env { home: home.to_path_buf(), projects: vec![] }
     }
 
     #[test]
@@ -207,7 +166,7 @@ mod tests {
             r#"{"version":2,"skills":{"a":{"source":"x/y"}}}"#,
         )
         .unwrap();
-        let p = Provenance::load(&env(t.path()), None);
+        let p = Provenance::load(&env(t.path()));
         let entry = t.path().join(".agents").join("skills").join("a");
         assert_eq!(p.owner(&entry, Ownership::Unmanaged), Ownership::Unmanaged);
         assert_eq!(p.issues().len(), 1);
@@ -222,7 +181,7 @@ mod tests {
             r#"{"version":3,"skills":{"a":{"source":"x/y","sourceUrl":"https://u","skillFolderHash":"h"}}}"#,
         )
         .unwrap();
-        let p = Provenance::load(&env(t.path()), None);
+        let p = Provenance::load(&env(t.path()));
         let entry = t.path().join(".agents").join("skills").join("a");
         assert_eq!(p.owner(&entry, Ownership::Unmanaged), Ownership::SkillsCli);
     }

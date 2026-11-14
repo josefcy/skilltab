@@ -317,7 +317,7 @@ mod tests {
     use std::fs;
 
     fn env(home: &Path) -> Env {
-        Env { home: home.to_path_buf(), projects: vec![], jstack_root: None }
+        Env { home: home.to_path_buf(), projects: vec![] }
     }
 
     fn feed(line: serde_json::Value) -> Vec<RawEvent> {

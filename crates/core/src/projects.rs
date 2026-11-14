@@ -43,10 +43,10 @@ fn first_cwds(transcript: &Path) -> Vec<PathBuf> {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        if let Ok(v) = serde_json::from_slice::<Value>(&buf) {
-            if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
-                out.push(PathBuf::from(cwd));
-            }
+        if let Ok(v) = serde_json::from_slice::<Value>(&buf)
+            && let Some(cwd) = v.get("cwd").and_then(|c| c.as_str())
+        {
+            out.push(PathBuf::from(cwd));
         }
     }
     out

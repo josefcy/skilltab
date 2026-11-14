@@ -61,12 +61,6 @@ function DetailBody({ d, bundles, onManage }: { d: SkillDetail; bundles: BundleR
         <p className="oneline">
           <b>Origin.</b> {d.originNote}
         </p>
-        {row.jstack && (
-          <p className="oneline">
-            <b>jstack.</b> {row.jstack.note}
-            {row.jstack.files.length > 0 && <span className="sub"> Edited: {row.jstack.files.join(", ")}</span>}
-          </p>
-        )}
       </header>
 
       {d.problemNotes.length > 0 && (
