@@ -26,10 +26,15 @@ export const events = {
 };
 
 /* Types */
-/**  A change the UI asks for. It names things only by ids the core issued, never by path. */
+/**  A change the UI asks for. It names things by ids the core issued. The one exception is the setup folder. */
 export type ActionRequest = { kind: "removeMount"; mount: string } | { kind: "deleteBody"; skill: string } | 
 /**  Several skills in one plan. Repeated ids count once. */
-{ kind: "deleteBodies"; skills: string[] } | { kind: "disable"; mount: string } | { kind: "restore"; shelf: string } | { kind: "bundleEnable"; bundle: string } | { kind: "bundleDisable"; bundle: string };
+{ kind: "deleteBodies"; skills: string[] } | { kind: "disable"; mount: string } | { kind: "restore"; shelf: string } | { kind: "bundleEnable"; bundle: string } | { kind: "bundleDisable"; bundle: string } | 
+/**
+ *  Write this machine's setup into a folder. The folder is the one path the UI sends. Core parses it once
+ *  into a `SetupDir`, and a leading `~` is the home folder.
+ */
+{ kind: "exportSetup"; folder: string };
 
 /**  One suggestion to confirm, as `confirm_aliases` takes it. The strings are the wire forms from `AliasSuggestionView`. */
 export type AliasPick = {
@@ -212,6 +217,17 @@ export type NameConflict = {
 	members: ConflictMember[],
 };
 
+export type NoteKind = 
+/**  Already as wanted, so the plan has no step for it. */
+"present" | "attention" | 
+/**  Only the user can do it, after the plan runs. */
+"manual";
+
+export type NoteView = {
+	kind: NoteKind,
+	text: string,
+};
+
 export type OriginView = {
 	id: string,
 	label: string,
@@ -228,6 +244,8 @@ export type PlanView = {
 	blockers: BlockerView[],
 	/**  Skills a bulk delete leaves out, each with why. Always empty for a single action. */
 	skipped: SkippedView[],
+	/**  What is already in place, what needs a look, and what only the user can do. None of it is a step. */
+	notes: NoteView[],
 	/**  No blockers and at least one step. The confirm button is enabled only then. */
 	ready: boolean,
 };
@@ -301,7 +319,7 @@ export type SkippedView = {
 	remedy: string,
 };
 
-export type StepKind = "removeLink" | "recycle" | "stash" | "relink" | "unstash" | "run";
+export type StepKind = "removeLink" | "recycle" | "stash" | "link" | "unstash" | "run" | "write" | "delete";
 
 export type StepResultView = "done" | "skipped" | "failed" | "notRun";
 

@@ -3,6 +3,7 @@
 //! expectation against the live disk first. Bundle operations are plans too, with one `Run` step,
 //! so the UI has one confirm flow.
 
+mod setup;
 mod shelf;
 #[cfg(unix)]
 mod unix;
@@ -17,6 +18,7 @@ use win as sys;
 use crate::harness::{registry, BundleOp, BundleRef, ExternalCommand};
 use crate::model::*;
 use crate::scan::{content_hash, still_link_to};
+use crate::setup::ExportInput;
 use sha1::{Digest, Sha1};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -46,6 +48,9 @@ pub(crate) enum ManageAction {
     Disable(MountId),
     Restore(ShelfId),
     Bundle(BundleId, BundleOp),
+    /// Write this machine's setup into the setup folder: `manifest.json` and the allowlisted config files.
+    /// Holds what `setup::read_export` read, so planning stays pure.
+    ExportSetup(Arc<ExportInput>),
 }
 
 pub(crate) struct Plan {
@@ -73,7 +78,8 @@ pub(crate) enum NoteKind {
     Present,
     /// Left as it is, or left out, and the user should know.
     Attention,
-    /// Something only the user can do after the plan runs.
+    /// Something only the user can do after the plan runs. Export has none. Restore's sign-in lines are these.
+    #[allow(dead_code)]
     Manual,
 }
 
@@ -142,6 +148,7 @@ pub(crate) fn plan(snap: &Snapshot, shelf: &Shelf, action: ManageAction) -> Plan
         ManageAction::DeleteBodies(ids) => delete_bodies(snap, ids, &mut p),
         ManageAction::Restore(id) => restore(snap, id, &mut p),
         ManageAction::Bundle(b, op) => bundle(snap, b, *op, &mut p),
+        ManageAction::ExportSetup(input) => setup::plan_export(input, &mut p),
     }
     p
 }

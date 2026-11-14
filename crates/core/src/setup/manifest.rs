@@ -38,7 +38,8 @@ struct RawSource {
 impl SetupManifest {
     /// Accepts any JSON layout and key order, a leading BOM, and unknown keys. Every name that later
     /// becomes an argument or a path segment is validated. A marketplace source that is not github with a
-    /// repo or git with a url is an error that names the marketplace.
+    /// repo or git with a url is an error that names the marketplace. Restore, the next unit, reads a cloned manifest with it.
+    #[allow(dead_code)]
     pub(crate) fn parse(text: &str) -> Result<SetupManifest, String> {
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let raw: Raw = serde_json::from_str(text).map_err(|e| format!("The manifest is not valid: {e}."))?;

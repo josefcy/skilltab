@@ -177,7 +177,7 @@ impl Skilltab {
     pub fn plan(&self, request: &ActionRequest) -> Result<PlanView, CoreError> {
         let c = self.read();
         let snap = c.snapshot;
-        let action = view::parse_action(&snap, request)?;
+        let action = view::parse_action(&snap, &self.env, request)?;
         let plan = manage::plan(&snap, &lock(&self.shelf), action);
         let id = format!("{}-{}", snap.revision, self.next_plan.fetch_add(1, Ordering::Relaxed));
         let out = view::plan_view(&snap, id.clone(), &plan);
@@ -505,6 +505,205 @@ mod tests {
 
             let single = app.plan(&ActionRequest::DeleteBody { skill: bulk_ids(&app, &["architect"]).remove(0) }).unwrap();
             assert!(single.skipped.is_empty() && !single.blockers.is_empty(), "a single delete still reports a blocker");
+        }
+
+        fn fixture(rel: &str) -> PathBuf {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/setup").join(rel)
+        }
+
+        /// A copy of the fixture home, and a setup folder at `~/repo` that already holds the two own skills.
+        fn export_home() -> Home {
+            let h = Home::new();
+            crate::testutil::copy_tree(&fixture("home"), &h.root);
+            crate::testutil::copy_tree(&fixture("expected/skills"), &h.p("repo/skills"));
+            h
+        }
+
+        fn export_request(h: &Home) -> ActionRequest {
+            ActionRequest::ExportSetup { folder: h.p("repo").to_string_lossy().into_owned() }
+        }
+
+        /// Every file under `root`, by `/` path.
+        fn tree(root: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+            fn walk(dir: &Path, rel: &str, out: &mut std::collections::BTreeMap<String, Vec<u8>>) {
+                for item in std::fs::read_dir(dir).unwrap() {
+                    let item = item.unwrap();
+                    let rel = format!("{rel}{}", item.file_name().to_string_lossy());
+                    if item.path().is_dir() {
+                        walk(&item.path(), &format!("{rel}/"), out);
+                    } else {
+                        out.insert(rel, std::fs::read(item.path()).unwrap());
+                    }
+                }
+            }
+            let mut out = std::collections::BTreeMap::new();
+            walk(root, "", &mut out);
+            out
+        }
+
+        fn notes_of(plan: &view::PlanView, kind: view::NoteKind) -> Vec<String> {
+            plan.notes.iter().filter(|n| n.kind == kind).map(|n| n.text.clone()).collect()
+        }
+
+        #[test]
+        fn export_writes_the_bytes_backup_ps1_wrote_and_a_second_export_has_nothing_to_do() {
+            let h = export_home();
+            let (app, os) = open(&h);
+
+            let plan = app.plan(&export_request(&h)).unwrap();
+            assert_eq!(plan.title, format!("Export setup to {}", view::path_str(&h.p("repo"))));
+            assert!(plan.ready && plan.blockers.is_empty(), "{:?}", plan.blockers.iter().map(|b| &b.reason).collect::<Vec<_>>());
+            assert_eq!(plan.steps.len(), 5);
+            assert!(plan.steps.iter().all(|s| s.kind == view::StepKind::Write && s.text == "Write a new file"));
+            let attention = notes_of(&plan, view::NoteKind::Attention);
+            assert_eq!(attention.len(), 1);
+            assert!(attention[0].contains("local-market") && attention[0].contains("directory"), "{attention:?}");
+
+            let report = app.apply(&plan.id).unwrap();
+            assert_eq!(report.outcome, ApplyOutcomeKind::Applied);
+            assert!(report.steps.iter().all(|s| s.result == StepResultView::Done));
+
+            let written = std::fs::read(h.p("repo/manifest.json")).unwrap();
+            assert_eq!(written, std::fs::read(fixture("expected/manifest.json")).unwrap());
+            assert_eq!(tree(&h.p("repo/config")), tree(&fixture("expected/config")));
+            assert!(os.ran.lock().unwrap().is_empty() && os.recycled.lock().unwrap().is_empty());
+
+            let again = app.plan(&export_request(&h)).unwrap();
+            assert!(!again.ready && again.steps.is_empty() && again.blockers.is_empty());
+            assert_eq!(notes_of(&again, view::NoteKind::Present).len(), 5);
+            assert_eq!(notes_of(&again, view::NoteKind::Attention).len(), 1, "the marketplace the format cannot rebuild stays named");
+        }
+
+        #[test]
+        fn export_takes_a_home_relative_folder_and_refuses_one_that_is_not_a_full_path() {
+            let h = export_home();
+            let (app, _) = open(&h);
+
+            let plan = app.plan(&ActionRequest::ExportSetup { folder: "~/repo".into() }).unwrap();
+            assert!(plan.ready);
+            assert_eq!(plan.title, format!("Export setup to {}", view::path_str(&h.p("repo"))));
+
+            for folder in ["repo", "~/missing"] {
+                let e = app.plan(&ActionRequest::ExportSetup { folder: folder.into() });
+                assert!(matches!(e, Err(CoreError::Invalid { .. })), "{folder}");
+            }
+        }
+
+        #[test]
+        fn export_never_reaches_settings_config_hooks_or_auth_files() {
+            let h = export_home();
+            for rel in [".claude/hooks.json", ".claude/auth.json", ".codex/auth.json", ".codex/hooks.json"] {
+                std::fs::write(h.p(rel), "{\"token\":\"x\"}").unwrap();
+            }
+            let (app, _) = open(&h);
+
+            let plan = app.plan(&export_request(&h)).unwrap();
+            let denied = ["settings.json", "config.toml", "hooks.json", "auth.json", "notes.txt"];
+            for step in &plan.steps {
+                assert!(denied.iter().all(|n| !step.detail.contains(n)), "{}", step.detail);
+                assert!(step.detail.starts_with(&view::path_str(&h.p("repo"))), "{}", step.detail);
+            }
+            assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Applied);
+            let top: Vec<String> = tree(&h.p("repo")).keys().map(|k| k.split('/').next().unwrap().to_owned()).collect();
+            assert!(top.iter().all(|t| ["config", "manifest.json", "skills"].contains(&t.as_str())), "{top:?}");
+        }
+
+        #[test]
+        fn a_secret_in_an_instruction_file_blocks_the_whole_export_and_names_the_file_not_the_secret() {
+            let h = export_home();
+            let secret = format!("sk-{}", "a1B2".repeat(6));
+            std::fs::write(h.p(".claude/CLAUDE.md"), format!("# Notes\nkey: {secret}\n")).unwrap();
+            let (app, _) = open(&h);
+
+            let plan = app.plan(&export_request(&h)).unwrap();
+            assert!(!plan.ready && plan.steps.is_empty());
+            assert_eq!(plan.blockers.len(), 1);
+            let reason = &plan.blockers[0].reason;
+            assert!(reason.contains("~/.claude/CLAUDE.md") && reason.contains("sk-["), "{reason}");
+            assert!(!reason.contains(&secret) && !plan.blockers[0].remedy.contains(&secret));
+
+            assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Refused);
+            assert!(!h.p("repo/manifest.json").exists() && !h.p("repo/config").exists());
+        }
+
+        #[test]
+        fn an_unreadable_or_unsupported_skill_lock_blocks_the_export() {
+            for lock in [r#"{"version":2,"skills":{}}"#, "{not json"] {
+                let h = export_home();
+                std::fs::write(h.p(".agents/.skill-lock.json"), lock).unwrap();
+                let (app, _) = open(&h);
+
+                let plan = app.plan(&export_request(&h)).unwrap();
+                assert!(!plan.ready && plan.steps.is_empty(), "{lock}");
+                assert!(plan.blockers.iter().any(|b| b.reason.contains(".skill-lock.json")), "{lock}");
+                assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Refused);
+                assert!(!h.p("repo/manifest.json").exists(), "no manifest from half a machine");
+            }
+        }
+
+        #[test]
+        fn an_unreadable_plugin_record_blocks_the_export_too() {
+            let h = export_home();
+            std::fs::write(h.p(".claude/settings.json"), "{oops").unwrap();
+            let (app, _) = open(&h);
+            let plan = app.plan(&export_request(&h)).unwrap();
+            assert!(!plan.ready && plan.blockers.iter().any(|b| b.reason.contains("settings.json")));
+        }
+
+        #[test]
+        fn a_setup_folder_inside_a_harness_folder_blocks_the_export() {
+            let h = export_home();
+            std::fs::create_dir_all(h.p(".claude/backup")).unwrap();
+            let (app, _) = open(&h);
+            let plan = app.plan(&ActionRequest::ExportSetup { folder: "~/.claude/backup".into() }).unwrap();
+            assert!(!plan.ready && plan.blockers.iter().any(|b| b.reason.contains("inside ~/.claude")), "{:?}", plan.blockers.iter().map(|b| &b.reason).collect::<Vec<_>>());
+        }
+
+        #[test]
+        fn export_replaces_changed_copies_and_deletes_copies_of_files_that_left_the_machine() {
+            let h = export_home();
+            let (app, _) = open(&h);
+            let first = app.plan(&export_request(&h)).unwrap();
+            app.apply(&first.id).unwrap();
+            std::fs::write(h.p("repo/config/claude/other.json"), "{}").unwrap();
+            std::fs::write(h.p("repo/config/claude/rules/old.txt"), "kept").unwrap();
+
+            std::fs::remove_file(h.p(".claude/rules/b-rule.md")).unwrap();
+            std::fs::write(h.p(".claude/rules/a-rule.md"), "rule a, edited\n").unwrap();
+            let plan = app.plan(&export_request(&h)).unwrap();
+
+            let steps: Vec<(view::StepKind, String)> = plan.steps.iter().map(|s| (s.kind, s.detail.replace('\\', "/"))).collect();
+            let repo = view::path_str(&h.p("repo")).replace('\\', "/");
+            assert_eq!(
+                steps,
+                [
+                    (view::StepKind::Write, format!("{repo}/config/claude/rules/a-rule.md")),
+                    (view::StepKind::Delete, format!("{repo}/config/claude/rules/b-rule.md")),
+                ]
+            );
+            assert_eq!(plan.steps[0].text, "Replace the file");
+            assert_eq!(app.apply(&plan.id).unwrap().outcome, ApplyOutcomeKind::Applied);
+
+            let config = tree(&h.p("repo/config"));
+            assert_eq!(config["claude/rules/a-rule.md"], b"rule a, edited\n");
+            assert!(!config.contains_key("claude/rules/b-rule.md"));
+            assert!(config.contains_key("claude/other.json") && config.contains_key("claude/rules/old.txt"), "files outside the allowlist shape stay");
+            let again = app.plan(&export_request(&h)).unwrap();
+            assert!(again.steps.is_empty());
+        }
+
+        #[test]
+        fn a_manifest_that_appears_after_planning_is_not_overwritten() {
+            let h = export_home();
+            let (app, _) = open(&h);
+            let plan = app.plan(&export_request(&h)).unwrap();
+            std::fs::write(h.p("repo/manifest.json"), "{}").unwrap();
+
+            let report = app.apply(&plan.id).unwrap();
+            assert_eq!(report.outcome, ApplyOutcomeKind::Stale);
+            assert!(report.reasons.iter().any(|r| r.contains("manifest.json")), "{:?}", report.reasons);
+            assert_eq!(std::fs::read(h.p("repo/manifest.json")).unwrap(), b"{}");
+            assert!(!h.p("repo/config").exists());
         }
 
         #[test]

@@ -6,13 +6,15 @@
 //! so the UI renders what it is sent and filters on these fields without domain rules of its own.
 
 use crate::harness::BundleOp;
-use crate::manage::{ApplyOutcome, Blocker, Effect, ManageAction, Plan, Skipped, Step, StepResult, Was, TRASH_NAME};
+use crate::manage::{self, ApplyOutcome, Blocker, Effect, ManageAction, Note, Plan, Skipped, Step, StepResult, Was, TRASH_NAME};
 use crate::model::*;
+use crate::{setup, Env};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Usage of one (harness, invocation key) pair. Empty until the usage index plugs in.
 pub(crate) type Tallies = HashMap<(HarnessId, InvocationKey), Tally>;
@@ -911,7 +913,7 @@ pub(crate) fn alias_views(snap: &Snapshot, store: &crate::aliases::AliasStore) -
 
 // ---------------------------------------------------------------- actions
 
-/// A change the UI asks for. It names things only by ids the core issued, never by path.
+/// A change the UI asks for. It names things by ids the core issued. The one exception is the setup folder.
 #[derive(Deserialize, Type, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ActionRequest {
@@ -923,6 +925,9 @@ pub enum ActionRequest {
     Restore { shelf: String },
     BundleEnable { bundle: String },
     BundleDisable { bundle: String },
+    /// Write this machine's setup into a folder. The folder is the one path the UI sends. Core parses it once
+    /// into a `SetupDir`, and a leading `~` is the home folder.
+    ExportSetup { folder: String },
 }
 
 #[derive(Serialize, Type)]
@@ -937,6 +942,8 @@ pub struct PlanView {
     pub blockers: Vec<BlockerView>,
     /// Skills a bulk delete leaves out, each with why. Always empty for a single action.
     pub skipped: Vec<SkippedView>,
+    /// What is already in place, what needs a look, and what only the user can do. None of it is a step.
+    pub notes: Vec<NoteView>,
     /// No blockers and at least one step. The confirm button is enabled only then.
     pub ready: bool,
 }
@@ -950,7 +957,7 @@ pub struct StepView {
     pub detail: String,
 }
 
-#[derive(Serialize, Type, Clone, Copy)]
+#[derive(Serialize, Type, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum StepKind {
     RemoveLink,
@@ -976,6 +983,23 @@ pub struct SkippedView {
     pub name: String,
     pub reason: String,
     pub remedy: String,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteView {
+    pub kind: NoteKind,
+    pub text: String,
+}
+
+#[derive(Serialize, Type, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteKind {
+    /// Already as wanted, so the plan has no step for it.
+    Present,
+    Attention,
+    /// Only the user can do it, after the plan runs.
+    Manual,
 }
 
 #[derive(Serialize, Type)]
@@ -1039,8 +1063,9 @@ pub enum StepResultView {
     NotRun,
 }
 
-/// Resolves the request's ids against the snapshot. An id the snapshot does not know is an error.
-pub(crate) fn parse_action(snap: &Snapshot, req: &ActionRequest) -> Result<ManageAction, CoreError> {
+/// Resolves the request's ids against the snapshot, and reads the setup folder it names. An id the snapshot does
+/// not know, or a folder that is not usable, is an error. This is the one place a request becomes a `ManageAction`.
+pub(crate) fn parse_action(snap: &Snapshot, env: &Env, req: &ActionRequest) -> Result<ManageAction, CoreError> {
     let unknown = |id: &str| CoreError::UnknownId { id: id.to_owned() };
     let mount = |id: &str| snap.mounts.keys().find(|m| m.as_str() == id).cloned().ok_or_else(|| unknown(id));
     let bundle = |id: &str| snap.bundles.keys().find(|b| b.as_str() == id).cloned().ok_or_else(|| unknown(id));
@@ -1065,6 +1090,9 @@ pub(crate) fn parse_action(snap: &Snapshot, req: &ActionRequest) -> Result<Manag
         }
         ActionRequest::BundleEnable { bundle: id } => ManageAction::Bundle(bundle(id)?, BundleOp::Enable),
         ActionRequest::BundleDisable { bundle: id } => ManageAction::Bundle(bundle(id)?, BundleOp::Disable),
+        ActionRequest::ExportSetup { folder } => {
+            ManageAction::ExportSetup(Arc::new(setup::read_export(env, setup::SetupDir::parse(env, folder)?)))
+        }
     })
 }
 
@@ -1080,6 +1108,7 @@ pub(crate) fn plan_view(snap: &Snapshot, id: String, plan: &Plan) -> PlanView {
         effects: plan.effects.iter().map(|e| cx.effect_view(e)).collect(),
         blockers: plan.blockers.iter().map(|b| cx.blocker_view(b)).collect(),
         skipped: plan.skipped.iter().map(|s| cx.skipped_view(s)).collect(),
+        notes: plan.notes.iter().map(note_view).collect(),
         ready: plan.blockers.is_empty() && !plan.steps.is_empty(),
     }
 }
@@ -1111,6 +1140,15 @@ pub(crate) fn apply_report(plan: &Plan, outcome: ApplyOutcome, revision: u32) ->
             ApplyReport { steps: run(results), output, ..empty(kind) }
         }
     }
+}
+
+fn note_view(n: &Note) -> NoteView {
+    let kind = match n.kind {
+        manage::NoteKind::Present => NoteKind::Present,
+        manage::NoteKind::Attention => NoteKind::Attention,
+        manage::NoteKind::Manual => NoteKind::Manual,
+    };
+    NoteView { kind, text: n.text.clone() }
 }
 
 fn step_view(s: &Step) -> StepView {
@@ -1179,6 +1217,7 @@ impl Cx<'_> {
                 let verb = if *op == BundleOp::Enable { "Enable" } else { "Disable" };
                 (format!("{verb} plugin {}", self.bundle_name(b)), format!("{verb} plugin"))
             }
+            ManageAction::ExportSetup(input) => (format!("Export setup to {}", path_str(input.dir.as_path())), "Export setup".into()),
         }
     }
 
