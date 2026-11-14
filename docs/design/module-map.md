@@ -46,6 +46,7 @@ Rules that keep it this way:
 | Inventory table | `getInventory`, with client-side filters over `facets` and fields of `SkillRow`. Re-fetches when `revision` changes. |
 | Detail pane | `getSkill`, rendered `skillMd`, a mount chain diagram from `MountDetail.chain`, and a usage chart from `series`. |
 | Action dialog (one component for every action) | `planAction` → render steps, effects and blockers → `applyPlan`. It is the only place that calls `applyPlan`. |
+| Bulk selection | A set of row ids in `App`, pruned on every rescan. The bar above the table sends one `{ kind: "deleteBodies", skills }` to the action dialog, which lists the plan's `skipped` skills apart from its steps. |
 | Shelf, broken links, ghosts tabs | Fields of `Inventory`. Restore and remove go through the action dialog. |
 
 ## Persisted state, one owner each

@@ -20,7 +20,10 @@ skilltab is a Windows desktop app that lists every agent skill on your machine i
 | Disable | Moves the entry to skilltab's shelf. Restore puts it back where it was. |
 | Remove | Takes the skill out of one harness. A junction is unlinked and never sent to the Recycle Bin. |
 | Delete everywhere | Removes every link and sends the real folder to the Recycle Bin. |
+| Delete several | Tick skills in the table and choose Delete…. One plan covers all of them. A skill that is part of a plugin, ships with the harness, or is rewritten by claude.ai sync is listed as skipped, and the rest go ahead. |
 | Enable or disable plugin | Runs `claude plugin enable` or `claude plugin disable`. Codex has no such command, so the plan says it is unsupported. |
+
+![Four skills selected for deletion, with a plugin skill skipped](docs/screens/bulk-delete.png)
 
 A plan is refused with a reason and a remedy in these cases:
 

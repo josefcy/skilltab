@@ -3,6 +3,7 @@ import { ActionDialog } from "./ActionDialog";
 import type { ActionRequest } from "./bindings";
 import { Detail } from "./Detail";
 import { BrokenPanel, BundlesPanel, ConflictsPanel, ShelfPanel } from "./Panels";
+import { BulkBar } from "./BulkBar";
 import { SkillTable } from "./SkillTable";
 import { Toolbar } from "./Toolbar";
 import { UsagePanel } from "./UsagePanel";
@@ -10,6 +11,13 @@ import { filterAndSort, NO_FILTERS, type Filters, type Sort, type SortKey } from
 import { hueMap, HueProvider } from "./ui";
 import { useInventory } from "./useInventory";
 import { useAliasSuggestions } from "./useSideData";
+
+/** Checkboxes are not text fields, so keys keep working after a tick. */
+function isTextField(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target instanceof HTMLInputElement) return !["checkbox", "radio"].includes(target.type);
+  return target.tagName === "SELECT" || target.tagName === "TEXTAREA";
+}
 
 type Tab = "skills" | "usage" | "shelf" | "bundles" | "conflicts" | "broken";
 
@@ -19,6 +27,7 @@ export default function App() {
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [sort, setSort] = useState<Sort>({ key: "name", dir: "asc" });
   const [selected, setSelected] = useState<string | null>(null);
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
   const [action, setAction] = useState<ActionRequest | null>(null);
   const closeAction = useCallback(() => setAction(null), []);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -36,6 +45,30 @@ export default function App() {
     );
   }, [inv, filters]);
   const hue = useMemo(() => (inv ? hueMap(inv.facets) : () => 210), [inv]);
+
+  // A rescan can drop skills, and a tick must never outlive its row.
+  useEffect(() => {
+    if (!inv) return;
+    const ids = new Set(inv.rows.map((r) => r.id));
+    setChecked((prev) => {
+      const kept = [...prev].filter((id) => ids.has(id));
+      return kept.length === prev.size ? prev : new Set(kept);
+    });
+  }, [inv]);
+
+  const check = useCallback(
+    (ids: string[], on: boolean) =>
+      setChecked((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) {
+          if (on) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      }),
+    [],
+  );
+  const clearChecked = useCallback(() => setChecked(new Set()), []);
 
   const onSort = (key: SortKey) =>
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "uses" || key === "lastUsed" ? "desc" : "asc" }));
@@ -63,7 +96,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (action) return;
-      const typing = e.target instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName);
+      const typing = isTextField(e.target);
       if (e.key === "/" && !typing) {
         e.preventDefault();
         setTab("skills");
@@ -71,7 +104,10 @@ export default function App() {
         searchRef.current?.select();
       } else if (e.key === "Escape") {
         if (typing && filters.text) setFilters((f) => ({ ...f, text: "" }));
-        else if (e.target instanceof HTMLElement) e.target.blur();
+        else {
+          if (e.target instanceof HTMLElement) e.target.blur();
+          if (!typing && tab === "skills") clearChecked();
+        }
       } else if (tab === "skills" && !typing && (e.key === "ArrowDown" || e.key === "j")) {
         e.preventDefault();
         step(1);
@@ -82,7 +118,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tab, step, filters.text, action]);
+  }, [tab, step, filters.text, action, clearChecked]);
 
   if (!inv) {
     return <main className="boot">{error ? <p className="error">Could not read the inventory: {error}</p> : <p className="sub">Scanning skills…</p>}</main>;
@@ -125,15 +161,27 @@ export default function App() {
           <>
             <Toolbar inv={inv} filters={filters} onChange={(patch) => setFilters((f) => ({ ...f, ...patch }))} shown={rows.length} searchRef={searchRef} />
             <div className="split">
-              <SkillTable
-                rows={rows}
-                shelved={shelved}
-                onRestore={(shelf) => setAction({ kind: "restore", shelf })}
-                selected={stillThere}
-                onSelect={setSelected}
-                sort={sort}
-                onSort={onSort}
-              />
+              <div className="table-pane">
+                {checked.size > 0 && (
+                  <BulkBar
+                    selected={checked.size}
+                    hidden={checked.size - rows.filter((r) => checked.has(r.id)).length}
+                    onDelete={() => setAction({ kind: "deleteBodies", skills: inv.rows.filter((r) => checked.has(r.id)).map((r) => r.id) })}
+                    onClear={clearChecked}
+                  />
+                )}
+                <SkillTable
+                  rows={rows}
+                  shelved={shelved}
+                  onRestore={(shelf) => setAction({ kind: "restore", shelf })}
+                  selected={stillThere}
+                  onSelect={setSelected}
+                  checked={checked}
+                  onCheck={check}
+                  sort={sort}
+                  onSort={onSort}
+                />
+              </div>
               {stillThere ? (
                 <Detail id={stillThere} revision={inv.revision} bundles={inv.bundles} onManage={setAction} />
               ) : (
@@ -148,7 +196,7 @@ export default function App() {
         {tab === "usage" && <UsagePanel suggestions={suggestions} confirmed={inv.aliases} onPick={showSkill} />}
         {tab === "shelf" && <ShelfPanel shelf={inv.shelf} onManage={setAction} />}
         {tab === "bundles" && <BundlesPanel bundles={inv.bundles} onPick={showBundle} onManage={setAction} />}
-        {action && <ActionDialog request={action} onClose={closeAction} />}
+        {action && <ActionDialog request={action} onClose={closeAction} onApplied={action.kind === "deleteBodies" ? clearChecked : undefined} />}
         {tab === "conflicts" && <ConflictsPanel problems={inv.problems} onPick={showSkill} />}
         {tab === "broken" && <BrokenPanel problems={inv.problems} />}
 

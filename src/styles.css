@@ -290,6 +290,40 @@ code,
   color: var(--muted);
 }
 
+/* bulk selection */
+.table-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+}
+
+.bulkbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--accent-soft);
+}
+
+.bulk-count {
+  font-weight: 600;
+}
+
+.bulk-count .sub {
+  font-weight: 400;
+}
+
+.manage.danger {
+  color: var(--warn);
+}
+
+.manage.danger:hover {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 /* split */
 .split {
   display: grid;
@@ -375,11 +409,30 @@ table.grid {
   background: var(--raised);
 }
 
+.grid tbody tr[data-checked="true"] {
+  background: var(--accent-soft);
+}
+
 .grid tbody tr[aria-selected="true"] {
   background: var(--accent-soft);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+.c-check {
+  width: 32px;
+  padding: 0;
+  text-align: center;
+  user-select: none;
+}
+.grid td.c-check {
+  padding: 0;
+  cursor: default;
+}
+.c-check input {
+  margin: 0;
+  vertical-align: middle;
+  accent-color: var(--accent);
+}
 .c-name {
   width: 130px;
 }
@@ -576,6 +629,8 @@ tr.shelved .name {
   inset: 0;
   z-index: 50;
   display: grid;
+  /* A definite row, so a long bulk plan scrolls inside the dialog instead of pushing its footer off screen. */
+  grid-template-rows: minmax(0, 1fr);
   place-items: center;
   padding: 24px;
   background: rgba(10, 14, 18, 0.45);
