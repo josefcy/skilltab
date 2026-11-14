@@ -1,7 +1,7 @@
 //! Follows one entry through junctions and symlinks, one hop at a time. The only place that
 //! mints `LinkPath` and `RealDir`.
 
-use crate::fsutil::{file_id, strip_verbatim};
+use crate::fsutil::{file_id, strip_verbatim, FileId};
 use crate::model::{norm_key, LinkPath, RealDir};
 use std::collections::HashSet;
 use std::fs;
@@ -9,8 +9,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const MAX_HOPS: usize = 16;
-
-pub(super) type FileId = (u32, u64);
 
 /// The result of following one entry.
 pub(super) enum Resolved {

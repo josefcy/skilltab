@@ -1,57 +1,7 @@
 use super::*;
-use crate::fsutil::strip_verbatim;
-use crate::provenance::Provenance;
-use crate::Env;
+use crate::testutil::{unlink, Home};
 use std::fs;
-use std::process::Command;
 use std::sync::Mutex;
-
-pub(crate) struct Home {
-    _guard: tempfile::TempDir,
-    pub root: PathBuf,
-}
-
-impl Home {
-    pub fn new() -> Home {
-        let guard = tempfile::tempdir().unwrap();
-        let root = strip_verbatim(fs::canonicalize(guard.path()).unwrap());
-        Home { _guard: guard, root }
-    }
-    pub fn p(&self, rel: &str) -> PathBuf {
-        self.root.join(rel.replace('/', "\\"))
-    }
-    pub fn skill(&self, rel: &str, name: &str) {
-        let dir = self.p(rel);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\nbody of {name}\n")).unwrap();
-    }
-    pub fn junction(&self, link: &str, target: &str) {
-        let link = self.p(link);
-        fs::create_dir_all(link.parent().unwrap()).unwrap();
-        let out = Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(&link).arg(self.p(target)).output().unwrap();
-        assert!(out.status.success(), "mklink: {}", String::from_utf8_lossy(&out.stderr));
-    }
-    /// A Claude plugin `pstack@cursor-plugins` with one skill, enabled in user settings.
-    pub fn claude_plugin(&self) {
-        let root = self.p(".claude/plugins/cache/cursor-plugins/pstack/1.0.0");
-        self.skill(".claude/plugins/cache/cursor-plugins/pstack/1.0.0/skills/architect", "architect");
-        let installed = serde_json::json!({"version": 2, "plugins": {"pstack@cursor-plugins": [
-            {"scope": "user", "installPath": root, "version": "1.0.0"}]}});
-        fs::write(self.p(".claude/plugins/installed_plugins.json"), installed.to_string()).unwrap();
-        fs::write(self.p(".claude/settings.json"), r#"{"enabledPlugins":{"pstack@cursor-plugins":true}}"#).unwrap();
-    }
-    pub fn env(&self) -> Env {
-        Env { home: self.root.clone(), projects: vec![] }
-    }
-    fn shelf(&self) -> Shelf {
-        Shelf::open(&self.p(".skilltab-data")).unwrap()
-    }
-    fn scan(&self, shelf: &Shelf, revision: u64) -> Snapshot {
-        let env = self.env();
-        let prov = Provenance::load(&env);
-        crate::scan::scan(&env, registry(), &[], &prov, shelf.entries().to_vec(), revision)
-    }
-}
 
 /// Records instead of recycling or running, and moves a "recycled" folder aside so the step's end state holds.
 #[derive(Default)]
@@ -88,10 +38,10 @@ fn results(outcome: ApplyOutcome) -> Vec<StepResult> {
 }
 
 #[test]
-fn removing_a_junction_mount_leaves_its_target_and_can_be_restored() {
+fn removing_a_linked_mount_leaves_its_target_and_can_be_restored() {
     let h = Home::new();
     h.skill(".agents/skills/x", "x");
-    h.junction(".claude/skills/x", ".agents/skills/x");
+    h.link(".claude/skills/x", ".agents/skills/x");
     let mut shelf = h.shelf();
     let snap = h.scan(&shelf, 1);
     let claude = mount(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/x"));
@@ -108,12 +58,54 @@ fn removing_a_junction_mount_leaves_its_target_and_can_be_restored() {
     assert_eq!(shelf.entries()[0].reason, ShelfReason::Removed);
 }
 
+#[cfg(windows)]
+#[test]
+fn a_junction_made_by_mklink_resolves_as_a_link() {
+    let h = Home::new();
+    h.skill(".agents/skills/x", "x");
+    let entry = h.p(".claude/skills/x");
+    fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    let made = std::process::Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(&entry).arg(h.p(".agents/skills/x")).output().unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+
+    assert!(still_link_to(&entry, &h.p(".agents/skills/x")));
+    let snap = h.scan(&h.shelf(), 1);
+    assert_eq!(mount(&snap, HarnessId::CLAUDE_CODE, &entry).hops.len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_resolves_as_a_link() {
+    let h = Home::new();
+    h.skill(".agents/skills/x", "x");
+    let entry = h.p(".claude/skills/x");
+    fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(h.p(".agents/skills/x"), &entry).unwrap();
+
+    assert!(still_link_to(&entry, &h.p(".agents/skills/x")));
+    let snap = h.scan(&h.shelf(), 1);
+    assert_eq!(mount(&snap, HarnessId::CLAUDE_CODE, &entry).hops.len(), 1);
+}
+
+#[test]
+fn a_rename_across_volumes_says_so_in_one_wording() {
+    let e = io::Error::from(io::ErrorKind::CrossesDevices);
+    assert!(moved_error(e, Path::new("x")).to_string().contains("another volume"));
+}
+
+#[test]
+fn a_missing_program_is_reported_as_not_installed() {
+    let command = ExternalCommand { program: "skilltab-no-such-tool".into(), args: vec![], cwd: None };
+    let e = SystemOs.run(&command).unwrap_err();
+    assert!(e.to_string().contains("is not installed or not on PATH"), "{e}");
+}
+
 #[test]
 fn removing_a_middle_hop_lists_every_mount_it_breaks() {
     let h = Home::new();
     h.skill("elsewhere/y", "y");
-    h.junction(".agents/skills/y", "elsewhere/y");
-    h.junction(".claude/skills/y", ".agents/skills/y");
+    h.link(".agents/skills/y", "elsewhere/y");
+    h.link(".claude/skills/y", ".agents/skills/y");
     let shelf = h.shelf();
     let snap = h.scan(&shelf, 1);
     let codex = mount(&snap, HarnessId::CODEX, &h.p(".agents/skills/y"));
@@ -127,7 +119,7 @@ fn removing_a_middle_hop_lists_every_mount_it_breaks() {
 fn delete_body_removes_every_link_then_recycles_the_real_folder() {
     let h = Home::new();
     h.skill(".agents/skills/x", "x");
-    h.junction(".claude/skills/x", ".agents/skills/x");
+    h.link(".claude/skills/x", ".agents/skills/x");
     let mut shelf = h.shelf();
     let snap = h.scan(&shelf, 1);
     let codex = mount(&snap, HarnessId::CODEX, &h.p(".agents/skills/x"));
@@ -164,7 +156,7 @@ fn recycle_really_moves_a_folder_to_the_recycle_bin() {
 fn disable_then_restore_round_trips_a_link() {
     let h = Home::new();
     h.skill(".agents/skills/x", "x");
-    h.junction(".claude/skills/x", ".agents/skills/x");
+    h.link(".claude/skills/x", ".agents/skills/x");
     let mut shelf = h.shelf();
     let snap = h.scan(&shelf, 1);
     let claude = mount(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/x"));
@@ -246,14 +238,14 @@ fn a_plan_whose_link_target_changed_is_refused_as_stale() {
     let h = Home::new();
     h.skill(".agents/skills/x", "x");
     h.skill("other/x", "x");
-    h.junction(".claude/skills/x", ".agents/skills/x");
+    h.link(".claude/skills/x", ".agents/skills/x");
     let mut shelf = h.shelf();
     let snap = h.scan(&shelf, 1);
     let m = mount(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/x"));
     let p = plan(&snap, &shelf, ManageAction::RemoveMount(m.id.clone()));
 
-    fs::remove_dir(h.p(".claude/skills/x")).unwrap();
-    h.junction(".claude/skills/x", "other/x");
+    unlink(&h.p(".claude/skills/x"));
+    h.link(".claude/skills/x", "other/x");
 
     let ApplyOutcome::Stale { reasons } = apply(&p, &mut shelf, &FakeOs::default()) else { panic!("expected Stale") };
     assert_eq!(reasons.len(), 1, "{reasons:?}");
@@ -280,7 +272,7 @@ fn a_real_folder_edited_after_planning_is_not_recycled() {
 fn applying_a_plan_twice_converges() {
     let h = Home::new();
     h.skill(".agents/skills/x", "x");
-    h.junction(".claude/skills/x", ".agents/skills/x");
+    h.link(".claude/skills/x", ".agents/skills/x");
     h.skill(".claude/skills/r", "r");
     let mut shelf = h.shelf();
     let snap = h.scan(&shelf, 1);
@@ -311,7 +303,7 @@ fn applying_a_plan_twice_converges() {
 fn shelf_survives_a_reopen_and_refuses_a_corrupt_file() {
     let h = Home::new();
     h.skill(".agents/skills/x", "x");
-    h.junction(".claude/skills/x", ".agents/skills/x");
+    h.link(".claude/skills/x", ".agents/skills/x");
     let mut shelf = h.shelf();
     let snap = h.scan(&shelf, 1);
     let m = mount(&snap, HarnessId::CLAUDE_CODE, &h.p(".claude/skills/x"));
@@ -326,12 +318,12 @@ fn shelf_survives_a_reopen_and_refuses_a_corrupt_file() {
     assert!(Shelf::open(&h.p(".skilltab-data")).is_err());
 }
 
-/// Real folders a, b and c. b is also reached by a Claude junction. `keep` is not part of any selection.
+/// Real folders a, b and c. b is also reached by a Claude link. `keep` is not part of any selection.
 fn bulk_home() -> Home {
     let h = Home::new();
     h.skill(".claude/skills/a", "a");
     h.skill(".agents/skills/b", "b");
-    h.junction(".claude/skills/b", ".agents/skills/b");
+    h.link(".claude/skills/b", ".agents/skills/b");
     h.skill(".claude/skills/c", "c");
     h.skill(".claude/skills/keep", "keep");
     h
@@ -440,7 +432,7 @@ fn applying_a_bulk_delete_recycles_real_folders_only_and_leaves_what_it_did_not_
 
     let mut recycled = os.recycled.lock().unwrap().clone();
     recycled.sort();
-    assert_eq!(recycled, vec![h.p(".agents/skills/b"), h.p(".claude/skills/c")], "the junction at .claude/skills/b is unlinked, never recycled");
+    assert_eq!(recycled, vec![h.p(".agents/skills/b"), h.p(".claude/skills/c")], "the link at .claude/skills/b is unlinked, never recycled");
     assert!(!h.p(".claude/skills/b").exists(), "the link is gone");
     assert!(h.p(".claude/skills/a").is_dir() && h.p(".claude/skills/keep").is_dir());
     assert!(shelf.entries().is_empty(), "a deleted skill is not shelved");

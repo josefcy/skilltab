@@ -391,8 +391,7 @@ fn plan<'a>(
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(stat(e)),
     };
-    let (vol, index) = fsutil::file_id(&path).map_err(stat)?;
-    let file_id = format!("{vol:x}:{index:x}");
+    let file_id = fsutil::file_id(&path).map_err(stat)?.to_string();
     let size = meta.len();
     let mtime = meta
         .modified()

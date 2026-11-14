@@ -34,8 +34,19 @@ pub(crate) fn strip_verbatim(p: PathBuf) -> PathBuf {
     }
 }
 
-/// (volume serial, file index) of a file or folder. Two paths with the same pair are one object.
-pub(crate) fn file_id(path: &Path) -> io::Result<(u32, u64)> {
+/// Two paths with equal ids are one file system object. `Display` is the text `usage.db` stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FileId(pub(crate) u64, pub(crate) u64);
+
+impl std::fmt::Display for FileId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}:{:x}", self.0, self.1)
+    }
+}
+
+/// (volume serial, file index) of a file or folder.
+#[cfg(windows)]
+pub(crate) fn file_id(path: &Path) -> io::Result<FileId> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::HANDLE;
@@ -56,5 +67,13 @@ pub(crate) fn file_id(path: &Path) -> io::Result<(u32, u64)> {
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)))
+    Ok(FileId(u64::from(info.dwVolumeSerialNumber), (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)))
+}
+
+/// (device, inode) of a file or folder. Follows links, like the Windows open does.
+#[cfg(unix)]
+pub(crate) fn file_id(path: &Path) -> io::Result<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path)?;
+    Ok(FileId(meta.dev(), meta.ino()))
 }

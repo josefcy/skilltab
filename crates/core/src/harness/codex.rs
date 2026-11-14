@@ -334,7 +334,8 @@ const READ_COMMANDS: &[&str] =
     &["get-content", "gc", "cat", "type", "more", "less", "bat", "readalltext", "readalllines", "readfilesync"];
 
 /// Absolute `SKILL.md` paths that `code` hands to a read command. `code` is the JS (or JSON) text of
-/// a tool call, so Windows backslashes arrive doubled.
+/// a tool call, so Windows backslashes arrive doubled. A transcript names the paths of the machine
+/// that wrote it, so a drive path and a leading `/` both count on every OS.
 fn read_skill_paths(code: &str) -> Vec<String> {
     const FILE: &str = "SKILL.md";
     let text = code.replace("\\\\", "\\");
@@ -347,7 +348,8 @@ fn read_skill_paths(code: &str) -> Vec<String> {
         let begin = text[..end].rfind(is_path_delimiter).map_or(0, |d| d + 1);
         let path = &text[begin..end];
         let b = path.as_bytes();
-        let absolute = b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+        let drive = b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+        let absolute = drive || b[0] == b'/';
         if !continues && absolute && read_command_before(&text[..begin]) && !out.iter().any(|p| p == path) {
             out.push(path.to_owned());
         }
@@ -375,7 +377,10 @@ fn read_command_before(prefix: &str) -> bool {
 /// A read through a junction and a read of the real folder must give one key, the same one the
 /// scanner gives that folder. A folder that is gone keeps the spelling it was read under.
 fn canonical_skill_file(path: &str) -> PathBuf {
+    #[cfg(windows)]
     let path = PathBuf::from(path.replace('/', "\\"));
+    #[cfg(not(windows))]
+    let path = PathBuf::from(path);
     match path.parent().map(std::fs::canonicalize) {
         Some(Ok(dir)) => fsutil::strip_verbatim(dir).join("SKILL.md"),
         _ => path,
@@ -385,6 +390,7 @@ fn canonical_skill_file(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::link;
     use std::fs;
 
     fn feed_all(parser: &mut CodexParser, lines: &[serde_json::Value]) -> Vec<RawEvent> {
@@ -435,6 +441,7 @@ mod tests {
             r#"text(await tools.exec_command({"cmd":"Get-Content -Raw 'C:\\Users\\u\\.codex\\skills\\c\\SKILL.md'"}))"#,
             r#"tools.exec_command({cmd:"Get-Content -LiteralPath 'C:/x/d/SKILL.md' -TotalCount 40"})"#,
             r#"tools.exec_command({cmd:"cat C:/x/e/SKILL.md"})"#,
+            r#"tools.exec_command({cmd:"cat /home/u/.codex/skills/f/SKILL.md"})"#,
         ];
         let ignored = [
             r#"tools.exec_command({cmd:"Get-ChildItem C:/Users/u/.agents/skills/a/SKILL.md"})"#,
@@ -452,7 +459,7 @@ mod tests {
         let mut keys: Vec<String> = events
             .iter()
             .map(|e| match &e.key {
-                InvocationKey::SkillFile(p) => p.to_string_lossy().replace('/', "\\"),
+                InvocationKey::SkillFile(p) => p.to_string_lossy().replace('\\', "/"),
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -460,11 +467,12 @@ mod tests {
         assert_eq!(
             keys,
             [
-                r"C:\Users\u\.agents\skills\a\SKILL.md",
-                r"C:\Users\u\.codex\skills\b\SKILL.md",
-                r"C:\Users\u\.codex\skills\c\SKILL.md",
-                r"C:\x\d\SKILL.md",
-                r"C:\x\e\SKILL.md",
+                "/home/u/.codex/skills/f/SKILL.md",
+                "C:/Users/u/.agents/skills/a/SKILL.md",
+                "C:/Users/u/.codex/skills/b/SKILL.md",
+                "C:/Users/u/.codex/skills/c/SKILL.md",
+                "C:/x/d/SKILL.md",
+                "C:/x/e/SKILL.md",
             ]
         );
         assert!(events.iter().all(|e| e.kind == InvocationKind::FileRead));
@@ -483,22 +491,16 @@ mod tests {
         assert_eq!(events[0].cwd, Some(PathBuf::from("D:\\proj")));
     }
 
-    fn mklink_junction(link: &Path, target: &Path) {
-        fs::create_dir_all(link.parent().unwrap()).unwrap();
-        let out = std::process::Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(link).arg(target).output().unwrap();
-        assert!(out.status.success());
-    }
-
     #[test]
     fn a_read_through_a_junction_keys_on_the_real_folder() {
         let t = tempfile::tempdir().unwrap();
         let real = fsutil::strip_verbatim(fs::canonicalize(t.path()).unwrap()).join("store").join("a");
         fs::create_dir_all(&real).unwrap();
         fs::write(real.join("SKILL.md"), "---\nname: a\n---\n").unwrap();
-        let link = t.path().join("agents").join("a");
-        mklink_junction(&link, &real);
+        let entry = t.path().join("agents").join("a");
+        link(&entry, &real);
 
-        let code = format!("Get-Content {}", link.join("SKILL.md").to_string_lossy().replace('\\', "/"));
+        let code = format!("Get-Content {}", entry.join("SKILL.md").to_string_lossy().replace('\\', "/"));
         let events = feed_all(&mut CodexParser::new(None), &[meta(), exec_call("c1", &code)]);
         assert_eq!(events[0].key, InvocationKey::SkillFile(real.join("SKILL.md")));
     }
@@ -518,8 +520,8 @@ mod tests {
         fs::write(plain.join("SKILL.md"), "---\nname: tdd\n---\n").unwrap();
 
         let agents = home.join(".agents").join("skills");
-        mklink_junction(&agents.join("architect"), &skill);
-        mklink_junction(&agents.join("tdd"), &plain);
+        link(&agents.join("architect"), &skill);
+        link(&agents.join("tdd"), &plain);
 
         let env = Env { home: home.clone(), projects: vec![] };
         let snap = crate::scan::scan(&env, &[&Codex], &[], &crate::provenance::Provenance::load(&env), Vec::new(), 1);

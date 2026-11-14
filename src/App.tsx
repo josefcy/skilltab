@@ -183,7 +183,7 @@ export default function App() {
                 />
               </div>
               {stillThere ? (
-                <Detail id={stillThere} revision={inv.revision} bundles={inv.bundles} onManage={setAction} />
+                <Detail id={stillThere} revision={inv.revision} bundles={inv.bundles} trashName={inv.trashName} onManage={setAction} />
               ) : (
                 <aside className="detail detail-empty">
                   <p>Select a skill to see where it is mounted, who owns it, and what it says.</p>

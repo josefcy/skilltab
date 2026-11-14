@@ -1,12 +1,12 @@
 # skilltab
 
-skilltab is a Windows desktop app that lists every agent skill on your machine in one table, for every harness that has one. Claude Code and Codex are supported today. For each skill it shows where each harness loads it from, who put it there, how often you use it, and which plugin or install record it came from. You can disable, restore, remove, or delete a skill. Every change opens a plan first and runs only after you confirm.
+skilltab is a desktop app for Windows, Linux and macOS. It lists every agent skill on your machine in one table, for every harness that has one. Claude Code and Codex are supported today. For each skill it shows where each harness loads it from, who put it there, how often you use it, and which plugin or install record it came from. You can disable, restore, remove, or delete a skill. Every change opens a plan first and runs only after you confirm.
 
 ![Four skills selected for deletion, with a plugin skill skipped](docs/screens/bulk-delete.png)
 
 ## What it shows
 
-- **One row per skill folder.** A skill that three junctions reach is one row, with each harness's path down to the real folder listed under it.
+- **One row per skill folder.** A skill that three links reach is one row, with each harness's path down to the real folder listed under it.
 - **Scope.** User, project, or plugin bundle.
 - **Owner and origin.** The owner is the tool that made the entry (a plugin manager, the `skills` CLI, claude.ai sync, or you by hand). The origin is where the files came from.
 - **Usage.** Counts from Claude Code and Codex transcripts, by kind: slash command, model call, `$name` mention, or a read of the skill's SKILL.md file. A skill counts as unused only for the period skilltab has transcripts for.
@@ -18,8 +18,8 @@ skilltab is a Windows desktop app that lists every agent skill on your machine i
 | Action | Result |
 | --- | --- |
 | Disable | Moves the entry to skilltab's shelf. Restore puts it back where it was. |
-| Remove | Takes the skill out of one harness. A junction is unlinked and never sent to the Recycle Bin. |
-| Delete everywhere | Removes every link and sends the real folder to the Recycle Bin. |
+| Remove | Takes the skill out of one harness. A link is unlinked and never sent to the Recycle Bin or Trash. |
+| Delete everywhere | Removes every link and sends the real folder to the Recycle Bin (Windows) or Trash (Linux and macOS). |
 | Delete several | Tick skills in the table and choose Delete…. One plan covers all of them. A skill that is part of a plugin, ships with the harness, or is rewritten by claude.ai sync is listed as skipped, and the rest go ahead. |
 | Enable or disable plugin | Runs `claude plugin enable` or `claude plugin disable`. Codex has no such command, so the plan says it is unsupported. |
 
@@ -33,27 +33,39 @@ If the disk changed after the plan was made, apply refuses it and the dialog pla
 
 ## Run it
 
-You need Rust (stable, MSVC), Node 24, and pnpm.
+You need Rust (stable), Node 24, and pnpm. On Linux, install the Tauri build packages first: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `librsvg2-dev` and `libayatana-appindicator3-dev`.
 
-```powershell
+```sh
 pnpm install
 pnpm tauri dev      # development window
-pnpm tauri build    # installers under target\release\bundle\
+pnpm tauri build    # installers under target/release/bundle/
 ```
 
-skilltab keeps its usage index and shelf in `%LOCALAPPDATA%\skilltab`. Two environment variables point it elsewhere:
+skilltab keeps its usage index and shelf in its data folder, which is Tauri's local data directory plus `skilltab`:
 
-- `SKILLTAB_HOME` points the whole app at another home folder, with its data in `<home>\.skilltab-data`. `scripts\fixture-home.ps1` builds a fixture home to try changes on.
+| OS | Data folder |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\skilltab` |
+| Linux | `~/.local/share/skilltab` |
+| macOS | `~/Library/Application Support/skilltab` |
+
+Two environment variables point it elsewhere:
+
+- `SKILLTAB_HOME` points the whole app at another home folder, with its data in `<home>/.skilltab-data`. `scripts\fixture-home.ps1` builds a fixture home to try changes on.
 - `SKILLTAB_DATA` moves only the data folder.
+
+The scripts under `scripts\` are Windows PowerShell dev helpers. The app and the core do not need them.
 
 ## Test it
 
-```powershell
-cargo test -p skilltab-core                    # unit and integration tests on temp trees with real junctions
-cargo test -p skilltab-core -- --ignored       # also sends one temp folder to the real Recycle Bin
+```sh
+cargo test -p skilltab-core                    # unit and integration tests on temp trees with real links
+cargo test -p skilltab-core -- --ignored       # also sends one temp folder to the real Recycle Bin or Trash
 cargo run -p skilltab-core --example dump      # print what the scanner finds on this machine
 cargo run -p skilltab-core --example usage -- --db <scratch.db>
 ```
+
+The tests make links with the same code the app uses, so they need no junction or symlink rights. CI runs the core tests, clippy, and the app build on Windows, Linux and macOS.
 
 ## Layout
 

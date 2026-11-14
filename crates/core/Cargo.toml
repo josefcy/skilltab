@@ -17,5 +17,8 @@ toml = "0.8"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_UI_Shell"] }
 
+[target.'cfg(not(windows))'.dependencies]
+trash = "5.3.0"
+
 [dev-dependencies]
 tempfile = "3"

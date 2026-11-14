@@ -10,7 +10,7 @@ use std::time::Instant;
 fn main() {
     let json_out = std::env::args().any(|a| a == "--json");
     let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from) else {
-        eprintln!("USERPROFILE is not set");
+        eprintln!("USERPROFILE or HOME must be set");
         std::process::exit(2);
     };
 
@@ -154,7 +154,7 @@ fn summary(snap: &Snapshot, home: &Path, project_count: usize, ms: f64) {
     }
 }
 
-fn count_lines<'a>(items: impl Iterator<Item = String>) {
+fn count_lines(items: impl Iterator<Item = String>) {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for i in items {
         *counts.entry(i).or_default() += 1;

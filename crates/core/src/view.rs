@@ -6,7 +6,7 @@
 //! so the UI renders what it is sent and filters on these fields without domain rules of its own.
 
 use crate::harness::BundleOp;
-use crate::manage::{ApplyOutcome, Blocker, Effect, ManageAction, Plan, Skipped, Step, StepResult};
+use crate::manage::{ApplyOutcome, Blocker, Effect, ManageAction, Plan, Skipped, Step, StepResult, TRASH_NAME};
 use crate::model::*;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -37,6 +37,8 @@ pub struct Inventory {
     pub aliases: Vec<AliasView>,
     /// Mounts skilltab took away and can put back. They are the disabled rows.
     pub shelf: Vec<ShelfRow>,
+    /// What this platform calls the place a deleted folder goes: "Recycle Bin" or "Trash".
+    pub trash_name: String,
 }
 
 #[derive(Serialize, Type)]
@@ -331,6 +333,7 @@ pub(crate) fn inventory(snap: &Snapshot, tallies: &Tallies, tracking: &TrackingS
         tracking_since: tracking_view,
         aliases: Vec::new(),
         shelf: cx.shelf_rows(),
+        trash_name: TRASH_NAME.to_owned(),
     }
 }
 
@@ -1110,13 +1113,14 @@ pub(crate) fn apply_report(plan: &Plan, outcome: ApplyOutcome, revision: u32) ->
 
 fn step_view(s: &Step) -> StepView {
     let arrow = |a: &Path, b: &Path| format!("{} → {}", path_str(a), path_str(b));
+    let recycle = format!("Move the folder to the {TRASH_NAME}");
     let (kind, text, detail) = match s {
         Step::RemoveLink { link, target, shelve } => (
             StepKind::RemoveLink,
             if shelve.is_some() { "Remove the link and keep it on the shelf" } else { "Remove the link" },
             arrow(link.as_path(), target),
         ),
-        Step::Recycle { dir, .. } => (StepKind::Recycle, "Move the folder to the Recycle Bin", path_str(dir.as_path())),
+        Step::Recycle { dir, .. } => (StepKind::Recycle, recycle.as_str(), path_str(dir.as_path())),
         Step::Stash { dir, stash, .. } => (StepKind::Stash, "Move the folder onto skilltab's shelf", arrow(dir.as_path(), stash)),
         Step::Relink { entry, target, .. } => (StepKind::Relink, "Recreate the link", arrow(entry, target)),
         Step::Unstash { stash, to, .. } => (StepKind::Unstash, "Move the folder back from the shelf", arrow(stash, to)),
@@ -1150,10 +1154,10 @@ impl Cx<'_> {
             }
             ManageAction::DeleteBody(b) => {
                 let name = self.snap.bodies.get(b).map_or("this skill", |b| b.manifest.name.as_str());
-                (format!("Delete {name} everywhere"), "Move to Recycle Bin".into())
+                (format!("Delete {name} everywhere"), format!("Move to {TRASH_NAME}"))
             }
             ManageAction::DeleteBodies(ids) => match ids.len() - plan.skipped.len() {
-                0 => ("Delete skills everywhere".into(), "Move to Recycle Bin".into()),
+                0 => ("Delete skills everywhere".into(), format!("Move to {TRASH_NAME}")),
                 n => {
                     let skills = format!("{n} skill{}", if n == 1 { "" } else { "s" });
                     (format!("Delete {skills} everywhere"), format!("Delete {skills}"))
@@ -1188,7 +1192,7 @@ impl Cx<'_> {
                 EffectView { text: format!("Also breaks {who}'s mount at {entry}, which goes through {}.", path_str(via)), harness }
             }
             Effect::BodyRecycled { dir } => {
-                EffectView { harness: None, text: format!("The folder {} and everything in it goes to the Recycle Bin.", path_str(dir)) }
+                EffectView { harness: None, text: format!("The folder {} and everything in it goes to the {TRASH_NAME}.", path_str(dir)) }
             }
         }
     }

@@ -5,6 +5,7 @@ mod hash;
 mod manifest;
 mod resolve;
 
+use crate::fsutil::FileId;
 use crate::harness::{Discovery, EntryFact, Harness, InstallFact, Naming, ScopeFact};
 use crate::model::*;
 use crate::provenance::Provenance;
@@ -292,7 +293,7 @@ impl<'a> Builder<'a> {
     }
 }
 
-fn skill_id((volume, index): (u32, u64)) -> SkillId {
+fn skill_id(FileId(volume, index): FileId) -> SkillId {
     SkillId::mint(format!("{volume:08x}-{index:016x}"))
 }
 
@@ -308,11 +309,10 @@ fn mount_id(harness: HarnessId, entry: &Path) -> MountId {
 
 #[cfg(test)]
 mod tests {
-    use crate::fsutil::strip_verbatim;
     use super::*;
     use crate::harness::{ParserState, SessionParser, UsageSource};
+    use crate::testutil::Home;
     use std::fs;
-    use std::process::Command;
 
     struct FakeHarness {
         id: HarnessId,
@@ -341,46 +341,16 @@ mod tests {
         }
     }
 
-    struct Tree {
-        _guard: tempfile::TempDir,
-        root: PathBuf,
-    }
-
-    impl Tree {
-        fn new() -> Tree {
-            let guard = tempfile::tempdir().unwrap();
-            let root = strip_verbatim(fs::canonicalize(guard.path()).unwrap());
-            Tree { _guard: guard, root }
-        }
-        fn p(&self, rel: &str) -> PathBuf {
-            self.root.join(rel.replace('/', "\\"))
-        }
-        fn skill(&self, rel: &str, name: &str) {
-            let dir = self.p(rel);
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\nbody of {name}\n")).unwrap();
-        }
-        fn junction(&self, link: &str, target: &str) {
-            let link = self.p(link);
-            fs::create_dir_all(link.parent().unwrap()).unwrap();
-            let out = Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(&link).arg(self.p(target)).output().unwrap();
-            assert!(out.status.success(), "mklink failed: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        }
-        fn env(&self) -> Env {
-            Env { home: self.root.clone(), projects: vec![] }
-        }
-    }
-
-    fn run(t: &Tree, harnesses: &[&dyn Harness]) -> Snapshot {
+    fn run(t: &Home, harnesses: &[&dyn Harness]) -> Snapshot {
         let env = t.env();
         let prov = Provenance::load(&env);
         scan(&env, harnesses, &[], &prov, Vec::new(), 1)
     }
 
-    fn claude(t: &Tree) -> FakeHarness {
+    fn claude(t: &Home) -> FakeHarness {
         FakeHarness { id: HarnessId::CLAUDE_CODE, dirs: vec![(t.p("claude/skills"), 0)] }
     }
-    fn codex(t: &Tree) -> FakeHarness {
+    fn codex(t: &Home) -> FakeHarness {
         FakeHarness { id: HarnessId::CODEX, dirs: vec![(t.p("agents/skills"), 0)] }
     }
 
@@ -389,11 +359,11 @@ mod tests {
     }
 
     #[test]
-    fn junction_chain_collapses_into_one_body_with_a_mount_per_harness() {
-        let t = Tree::new();
+    fn link_chain_collapses_into_one_body_with_a_mount_per_harness() {
+        let t = Home::new();
         t.skill("repo/skills/x", "x");
-        t.junction("agents/skills/x", "repo/skills/x");
-        t.junction("claude/skills/x", "agents/skills/x");
+        t.link("agents/skills/x", "repo/skills/x");
+        t.link("claude/skills/x", "agents/skills/x");
 
         let snap = run(&t, &[&claude(&t), &codex(&t)]);
 
@@ -417,7 +387,7 @@ mod tests {
         let mut both = vec![claude_mount.id.clone(), codex_mount.id.clone()];
         both.sort();
         assert_eq!(through_agents, both);
-        assert_eq!(snap.mounts_through(&t.p("claude/skills/x")), &[claude_mount.id.clone()]);
+        assert_eq!(snap.mounts_through(&t.p("claude/skills/x")), std::slice::from_ref(&claude_mount.id));
         assert!(snap.mounts_through(&t.p("repo/skills/x")).is_empty());
         assert!(snap.mounts_through(&t.p("nowhere")).is_empty());
 
@@ -429,12 +399,12 @@ mod tests {
     }
 
     #[test]
-    fn dangling_junction_is_a_broken_link_issue_and_the_rest_still_scans() {
-        let t = Tree::new();
+    fn dangling_link_is_a_broken_link_issue_and_the_rest_still_scans() {
+        let t = Home::new();
         t.skill("repo/skills/ok", "ok");
-        t.junction("claude/skills/ok", "repo/skills/ok");
+        t.link("claude/skills/ok", "repo/skills/ok");
         t.skill("gone/y", "y");
-        t.junction("claude/skills/y", "gone/y");
+        t.link("claude/skills/y", "gone/y");
         fs::remove_dir_all(t.p("gone/y")).unwrap();
 
         let snap = run(&t, &[&claude(&t)]);
@@ -457,10 +427,10 @@ mod tests {
 
     #[test]
     fn broken_link_in_the_middle_of_a_chain_names_the_last_link() {
-        let t = Tree::new();
+        let t = Home::new();
         t.skill("repo/skills/z", "z");
-        t.junction("agents/skills/z", "repo/skills/z");
-        t.junction("claude/skills/z", "agents/skills/z");
+        t.link("agents/skills/z", "repo/skills/z");
+        t.link("claude/skills/z", "agents/skills/z");
         fs::remove_dir_all(t.p("repo/skills/z")).unwrap();
 
         let snap = run(&t, &[&claude(&t), &codex(&t)]);
@@ -475,11 +445,11 @@ mod tests {
 
     #[test]
     fn link_cycle_is_reported_not_followed_forever() {
-        let t = Tree::new();
+        let t = Home::new();
         fs::create_dir_all(t.p("claude/skills/b")).unwrap();
-        t.junction("claude/skills/a", "claude/skills/b");
+        t.link("claude/skills/a", "claude/skills/b");
         fs::remove_dir(t.p("claude/skills/b")).unwrap();
-        t.junction("claude/skills/b", "claude/skills/a");
+        t.link("claude/skills/b", "claude/skills/a");
 
         let snap = run(&t, &[&claude(&t)]);
 
@@ -489,7 +459,7 @@ mod tests {
 
     #[test]
     fn real_folder_entry_has_no_hops_and_two_copies_stay_two_bodies() {
-        let t = Tree::new();
+        let t = Home::new();
         t.skill("claude/skills/a", "a");
         t.skill("agents/skills/a", "a");
 
@@ -504,7 +474,7 @@ mod tests {
 
     #[test]
     fn same_name_in_one_harness_shadows_by_rank() {
-        let t = Tree::new();
+        let t = Home::new();
         t.skill("user/skills/dup", "dup");
         t.skill("proj/skills/dup", "dup");
         let h = FakeHarness { id: HarnessId::CLAUDE_CODE, dirs: vec![(t.p("proj/skills"), 1), (t.p("user/skills"), 0)] };
@@ -520,7 +490,7 @@ mod tests {
 
     #[test]
     fn dot_folders_and_folders_without_skill_md_are_skipped() {
-        let t = Tree::new();
+        let t = Home::new();
         t.skill("claude/skills/.trash/old", "old");
         fs::create_dir_all(t.p("claude/skills/synced/inner")).unwrap();
         t.skill("claude/skills/real", "real");
@@ -533,7 +503,7 @@ mod tests {
 
     #[test]
     fn missing_skill_root_is_not_an_error() {
-        let t = Tree::new();
+        let t = Home::new();
         let snap = run(&t, &[&claude(&t)]);
         assert!(snap.mounts.is_empty() && snap.issues.is_empty());
         assert!(!snap.harnesses[0].present);

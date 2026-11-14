@@ -7,6 +7,8 @@ use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
+pub(crate) const TRASH_NAME: &str = "Recycle Bin";
+
 fn wide(path: &Path, extra_nuls: usize) -> Vec<u16> {
     let mut w: Vec<u16> = path.as_os_str().encode_wide().collect();
     w.extend(std::iter::repeat_n(0, 1 + extra_nuls));
@@ -50,9 +52,9 @@ pub(super) fn recycle(dir: &RealDir) -> io::Result<()> {
     Ok(())
 }
 
-/// Creates `entry` as an NTFS junction to `target`. std has no API for this, and shelling out to
+/// Creates `entry` as an NTFS junction to the absolute `target`. std has no API for this, and shelling out to
 /// `mklink` would pass the paths through cmd's parser.
-pub(super) fn create_junction(entry: &Path, target: &Path) -> io::Result<()> {
+pub(super) fn create_link(entry: &Path, target: &Path) -> io::Result<()> {
     std::fs::create_dir(entry)?;
     let set = set_mount_point(entry, target);
     if set.is_err() {

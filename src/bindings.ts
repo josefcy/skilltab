@@ -177,6 +177,8 @@ export type Inventory = {
 	aliases: AliasView[],
 	/**  Mounts skilltab took away and can put back. They are the disabled rows. */
 	shelf: ShelfRow[],
+	/**  What this platform calls the place a deleted folder goes: "Recycle Bin" or "Trash". */
+	trashName: string,
 };
 
 /**  Emitted after every refresh. The UI re-fetches the inventory when `revision` changes. */

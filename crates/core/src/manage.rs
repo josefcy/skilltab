@@ -4,7 +4,15 @@
 //! so the UI has one confirm flow.
 
 mod shelf;
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
 mod win;
+
+#[cfg(unix)]
+use unix as sys;
+#[cfg(windows)]
+use win as sys;
 
 use crate::harness::{registry, BundleOp, BundleRef, ExternalCommand};
 use crate::model::*;
@@ -14,6 +22,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub(crate) use shelf::Shelf;
+pub(crate) use sys::TRASH_NAME;
+
+/// Tests make links through the same code `apply` uses. Production code cannot reach it.
+#[cfg(test)]
+pub(crate) fn create_link(entry: &Path, target: &Path) -> io::Result<()> {
+    sys::create_link(entry, target)
+}
 
 // ---------------------------------------------------------------- requests and plans
 
@@ -21,7 +36,7 @@ pub(crate) use shelf::Shelf;
 pub(crate) enum ManageAction {
     /// Take the skill away from one harness at one entry. A link goes to the shelf, so it can be put back.
     RemoveMount(MountId),
-    /// Remove every mount's link, then send the real folder to the Recycle Bin.
+    /// Remove every mount's link, then send the real folder to the Recycle Bin or trash.
     DeleteBody(SkillId),
     /// `DeleteBody` for several skills in one plan. A skill that cannot be deleted is skipped with its reasons
     /// and does not block the others.
@@ -51,9 +66,9 @@ pub(crate) struct Skipped {
 /// and `apply` refuses the whole plan when an unfinished step's expectation no longer holds.
 #[derive(Clone, Debug)]
 pub(crate) enum Step {
-    /// Delete the reparse point, never what it points to. `shelve` is written first when the link can be put back.
+    /// Delete the link itself, never what it points to. `shelve` is written first when the link can be put back.
     RemoveLink { link: LinkPath, target: PathBuf, shelve: Option<ShelfEntry> },
-    /// Only a `RealDir` can be recycled, so a junction never reaches the Recycle Bin.
+    /// Only a `RealDir` can be recycled, so a link never reaches the Recycle Bin or trash.
     Recycle { dir: RealDir, hash: ContentHash },
     Stash { dir: RealDir, hash: ContentHash, shelve: ShelfEntry, stash: PathBuf },
     Relink { shelf: ShelfId, entry: PathBuf, target: PathBuf },
@@ -302,23 +317,29 @@ pub(crate) struct SystemOs;
 
 impl Os for SystemOs {
     fn recycle(&self, dir: &RealDir) -> io::Result<()> {
-        win::recycle(dir)
+        sys::recycle(dir)
     }
 
     fn run(&self, c: &ExternalCommand) -> io::Result<String> {
         let command = |program: &str| {
             let mut cmd = std::process::Command::new(program);
-            cmd.args(&c.args);
+            cmd.args(&c.args).stdin(std::process::Stdio::null());
             if let Some(dir) = &c.cwd {
                 cmd.current_dir(dir);
             }
             cmd
         };
+        let spawned = command(&c.program).output();
         // npm installs CLIs as `<name>.cmd`, which Command does not find under the bare name.
-        let out = match command(&c.program).output() {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => command(&format!("{}.cmd", c.program)).output()?,
-            other => other?,
+        #[cfg(windows)]
+        let spawned = match spawned {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => command(&format!("{}.cmd", c.program)).output(),
+            other => other,
         };
+        let out = spawned.map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => io::Error::new(e.kind(), format!("`{}` is not installed or not on PATH", c.program)),
+            _ => e,
+        })?;
         let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_owned();
         if !out.status.success() {
             return Err(io::Error::other(format!("{} exited with {}: {text}", c.display(), out.status)));
@@ -450,7 +471,7 @@ fn run_step(step: &Step, shelf: &mut Shelf, os: &dyn Os, output: &mut Vec<String
             if let Some(e) = shelve {
                 shelf.record(stamped(e))?;
             }
-            win::remove_link(link)?;
+            sys::remove_link(link)?;
         }
         Step::Recycle { dir, .. } => os.recycle(dir)?,
         Step::Stash { dir, shelve, stash, .. } => {
@@ -461,7 +482,7 @@ fn run_step(step: &Step, shelf: &mut Shelf, os: &dyn Os, output: &mut Vec<String
             std::fs::rename(dir.as_path(), stash).map_err(|e| moved_error(e, stash))?;
         }
         Step::Relink { shelf: id, entry, target } => {
-            win::create_junction(entry, target)?;
+            sys::create_link(entry, target)?;
             shelf.forget(id)?;
         }
         Step::Unstash { shelf: id, stash, to } => {
@@ -476,9 +497,8 @@ fn run_step(step: &Step, shelf: &mut Shelf, os: &dyn Os, output: &mut Vec<String
 /// A rename cannot cross volumes. Copying and deleting instead would turn a cheap, atomic move into
 /// a partial one, so the step fails and says why.
 fn moved_error(e: io::Error, to: &Path) -> io::Error {
-    const ERROR_NOT_SAME_DEVICE: i32 = 17;
-    if e.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE) {
-        io::Error::other(format!("{} is on another drive, and skilltab only moves folders within one drive.", to.display()))
+    if e.kind() == io::ErrorKind::CrossesDevices {
+        io::Error::other(format!("{} is on another volume, and skilltab only moves folders within one volume.", to.display()))
     } else {
         e
     }

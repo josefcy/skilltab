@@ -289,6 +289,7 @@ fn merge(into: &mut Tally, from: &Tally) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::link;
     use crate::Env;
     use chrono::{TimeZone, Utc};
     use std::fs;
@@ -357,12 +358,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         skill(tmp.path(), ".agents/skills/tdd", "tdd");
         let real = tmp.path().join(".agents/skills/tdd");
-        fs::create_dir_all(tmp.path().join(".claude/skills")).unwrap();
-        for entry in ["tdd", "tdd-again"] {
-            let link = tmp.path().join(".claude/skills").join(entry);
-            let backslashed = |p: &Path| p.to_string_lossy().replace('/', "\\");
-            let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J", &backslashed(&link), &backslashed(&real)]).output().unwrap();
-            assert!(made.status.success(), "mklink: {}", String::from_utf8_lossy(&made.stdout));
+        for folder in ["tdd", "tdd-again"] {
+            let entry = tmp.path().join(".claude/skills").join(folder);
+            link(&entry, &real);
         }
         let snap = snapshot(tmp.path());
         assert_eq!(snap.bodies.len(), 1);

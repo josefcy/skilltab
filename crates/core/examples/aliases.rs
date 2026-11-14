@@ -1,6 +1,6 @@
 //! Prints which ghost usage keys on this machine would be linked to an installed skill, and which stay unmatched.
 //! Usage: cargo run -p skilltab-core --example aliases -- --data <scratch dir> [--confirm-all]
-//! The scratch dir holds usage.db and aliases.json. The real %LOCALAPPDATA%\skilltab is never touched.
+//! The scratch dir holds usage.db and aliases.json. The real skilltab data folder is never touched.
 //! Aliases are written only with --confirm-all, and only into the scratch dir.
 
 use skilltab_core::*;
@@ -12,7 +12,7 @@ fn main() {
     let data = args.windows(2).find(|w| w[0] == "--data").map(|w| PathBuf::from(&w[1]));
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
     let (Some(data), Some(home)) = (data, home) else {
-        eprintln!("usage: aliases --data <scratch dir> [--confirm-all]   (USERPROFILE must be set)");
+        eprintln!("usage: aliases --data <scratch dir> [--confirm-all]   (USERPROFILE or HOME must be set)");
         std::process::exit(2);
     };
     if let Err(e) = run(&data, &home, args.iter().any(|a| a == "--confirm-all")) {

@@ -10,6 +10,8 @@ mod model;
 mod projects;
 mod provenance;
 mod scan;
+#[cfg(test)]
+mod testutil;
 mod usage;
 pub mod view;
 
@@ -154,7 +156,7 @@ impl Skilltab {
         view::detail(&c.snapshot, id, &c.usage.tallies, &c.usage.tracking_since)
     }
 
-    /// Opens Explorer on one hop of one mount's chain (0 is the entry, the last is the real folder).
+    /// Opens the file manager on one hop of one mount's chain (0 is the entry, the last is the real folder).
     /// Takes ids the core issued, never a path.
     pub fn reveal(&self, mount_id: &str, hop: u32) -> Result<(), CoreError> {
         let snap = self.read().snapshot;
@@ -271,9 +273,15 @@ fn reveal_in_explorer(path: &Path) -> std::io::Result<()> {
     std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", view::path_str(path))).spawn().map(|_| ())
 }
 
-#[cfg(not(windows))]
-fn reveal_in_explorer(_path: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "reveal is only implemented on Windows"))
+#[cfg(target_os = "macos")]
+fn reveal_in_explorer(path: &Path) -> std::io::Result<()> {
+    std::process::Command::new("open").arg("-R").arg(path).spawn().map(|_| ())
+}
+
+/// xdg-open has no select verb, so the folder that holds `path` opens instead.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal_in_explorer(path: &Path) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn().map(|_| ())
 }
 
 #[cfg(test)]
@@ -359,7 +367,8 @@ mod tests {
 
     mod manage_flow {
         use super::super::*;
-        use crate::manage::tests::{FakeOs, Home};
+        use crate::manage::tests::FakeOs;
+        use crate::testutil::Home;
         use std::sync::Arc;
         use view::{ActionRequest, ApplyOutcomeKind, StepResultView};
 
@@ -390,7 +399,7 @@ mod tests {
         fn disable_shows_a_shelf_row_and_restore_brings_the_mount_back() {
             let h = Home::new();
             h.skill(".agents/skills/x", "x");
-            h.junction(".claude/skills/x", ".agents/skills/x");
+            h.link(".claude/skills/x", ".agents/skills/x");
             let (app, _) = open(&h);
             let mount = mount_id(&app, &h.p(".claude/skills/x"));
 
@@ -463,6 +472,8 @@ mod tests {
             assert_eq!((plan.title.as_str(), plan.confirm.as_str()), ("Delete 2 skills everywhere", "Delete 2 skills"));
             assert!(plan.ready && plan.blockers.is_empty());
             assert_eq!(plan.steps.len(), 2, "the repeated id is one skill");
+            assert!(plan.steps.iter().all(|s| s.text.contains(manage::TRASH_NAME)), "{:?}", plan.steps.iter().map(|s| &s.text).collect::<Vec<_>>());
+            assert_eq!(app.inventory().trash_name, manage::TRASH_NAME);
             let skipped: Vec<(&str, bool)> = plan.skipped.iter().map(|s| (s.name.as_str(), s.reason.contains("plugin"))).collect();
             assert_eq!(skipped, [("architect", true)]);
             assert!(plan.skipped[0].remedy.contains("Disable plugin"), "{}", plan.skipped[0].remedy);

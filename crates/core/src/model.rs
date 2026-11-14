@@ -103,8 +103,10 @@ impl ProjectRoot {
     }
 }
 
-/// Case-folded, separator-normalized, verbatim-prefix-stripped spelling of a path. NTFS paths
-/// compare case-insensitively, so every path lookup goes through this form.
+/// One spelling per folder, so every path lookup goes through this form. NTFS compares paths
+/// case-insensitively, so on Windows the key is case-folded, separator-normalized and
+/// verbatim-prefix-stripped.
+#[cfg(windows)]
 pub(crate) fn norm_key(p: &Path) -> String {
     let s = p.to_string_lossy().replace('/', "\\");
     let s = s.strip_prefix("\\\\?\\UNC\\").map(|r| format!("\\\\{r}")).unwrap_or(s);
@@ -113,6 +115,17 @@ pub(crate) fn norm_key(p: &Path) -> String {
     let trimmed = s.trim_end_matches('\\');
     let s = if trimmed.len() == 2 && trimmed.ends_with(':') { s } else { trimmed.to_owned() };
     s.to_lowercase()
+}
+
+/// Linux and macOS volumes can be case sensitive, and folding could merge two real folders, so the
+/// spelling stays exact and only trailing separators go.
+#[cfg(unix)]
+pub(crate) fn norm_key(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    match s.trim_end_matches('/') {
+        "" => s.into_owned(),
+        trimmed => trimmed.to_owned(),
+    }
 }
 
 // ---------------------------------------------------------------- the skill body
@@ -402,12 +415,22 @@ pub type Timestamp = chrono::DateTime<chrono::Utc>;
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn norm_key_ignores_case_separators_and_verbatim_prefix() {
         let a = norm_key(Path::new(r"\\?\C:\Users\Josef\.agents\skills\X\"));
         let b = norm_key(Path::new("c:/users/josef/.agents/skills/x"));
         assert_eq!(a, b);
         assert_eq!(norm_key(Path::new(r"C:\")), "c:\\");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn norm_key_keeps_case_and_trims_trailing_separators() {
+        assert_eq!(norm_key(Path::new("/home/u/.agents/skills/x/")), "/home/u/.agents/skills/x");
+        assert_ne!(norm_key(Path::new("/home/u/Foo")), norm_key(Path::new("/home/u/foo")));
+        assert_eq!(norm_key(Path::new("/")), "/");
+        assert_eq!(norm_key(Path::new(r"/a\b")), r"/a\b");
     }
 }
 
