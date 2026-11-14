@@ -374,6 +374,8 @@ pub struct ExternalCommand {
     pub args: Vec<String>,
     /// Working directory for the command.
     pub cwd: Option<PathBuf>,
+    /// Set in the child's environment on top of what it inherits.
+    pub env: Vec<(String, String)>,
 }
 
 impl ExternalCommand {

@@ -78,6 +78,7 @@ impl Harness for ClaudeCode {
             program: "claude".to_owned(),
             args: vec!["plugin".to_owned(), verb.to_owned(), format!("{}@{}", b.name, b.marketplace)],
             cwd: None,
+            env: Vec::new(),
         })
     }
 

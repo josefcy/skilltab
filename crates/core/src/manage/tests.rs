@@ -1,5 +1,6 @@
 use super::*;
 use crate::testutil::{unlink, Home};
+use std::collections::BTreeSet;
 use std::fs;
 use std::sync::Mutex;
 
@@ -8,6 +9,8 @@ use std::sync::Mutex;
 pub(crate) struct FakeOs {
     pub recycled: Mutex<Vec<PathBuf>>,
     pub ran: Mutex<Vec<String>>,
+    /// The programs `find_tool` finds.
+    pub tools: BTreeSet<String>,
 }
 
 impl Os for FakeOs {
@@ -20,6 +23,9 @@ impl Os for FakeOs {
     fn run(&self, command: &ExternalCommand) -> io::Result<String> {
         self.ran.lock().unwrap().push(command.display());
         Ok("ok".into())
+    }
+    fn find_tool(&self, program: &str) -> bool {
+        self.tools.contains(program)
     }
 }
 
@@ -95,9 +101,72 @@ fn a_rename_across_volumes_says_so_in_one_wording() {
 
 #[test]
 fn a_missing_program_is_reported_as_not_installed() {
-    let command = ExternalCommand { program: "skilltab-no-such-tool".into(), args: vec![], cwd: None };
+    let command = ExternalCommand { program: "skilltab-no-such-tool".into(), args: vec![], cwd: None, env: vec![] };
     let e = SystemOs.run(&command).unwrap_err();
     assert!(e.to_string().contains("is not installed or not on PATH"), "{e}");
+}
+
+fn make_tool(dir: &Path, program: &str) {
+    let file = dir.join(&sys::tool_names(program)[0]);
+    fs::write(&file, "").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn a_tool_is_found_by_the_name_this_platform_gives_an_executable() {
+    let h = Home::new();
+    make_tool(&h.root, "fake-tool");
+    assert!(has_tool(&h.root, "fake-tool"));
+    assert!(!has_tool(&h.root, "other-tool"));
+    assert!(!has_tool(&h.p("missing"), "fake-tool"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_without_the_executable_bit_is_not_a_tool() {
+    let h = Home::new();
+    fs::write(h.p("fake-tool"), "").unwrap();
+    assert!(!has_tool(&h.root, "fake-tool"));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_cmd_shim_is_a_tool_on_windows() {
+    let h = Home::new();
+    fs::write(h.p("npx.cmd"), "").unwrap();
+    assert!(has_tool(&h.root, "npx"));
+}
+
+#[test]
+fn the_search_folders_are_path_first_and_then_the_ones_a_gui_launch_misses() {
+    let h = Home::new();
+    let path = std::env::join_paths([h.p("a"), h.p("b")]).unwrap();
+    let dirs = tool_dirs(Some(path), Some(&h.p("home")));
+    assert_eq!(dirs[..2], [h.p("a"), h.p("b")]);
+    #[cfg(unix)]
+    {
+        let extra: Vec<PathBuf> = dirs[2..].to_vec();
+        let wanted = [h.p("home/.local/bin"), PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin"), h.p("home/.npm-global/bin")];
+        assert_eq!(extra, wanted);
+    }
+    #[cfg(windows)]
+    assert_eq!(dirs.len(), 2);
+    assert!(tool_dirs(None, None).iter().all(|d| d.is_absolute()));
+}
+
+#[test]
+fn a_command_runs_with_the_environment_it_names() {
+    let probe = vec![("SKILLTAB_PROBE".to_owned(), "from-the-command".to_owned())];
+    #[cfg(windows)]
+    let (program, args) = ("cmd", vec!["/C".to_owned(), "echo %SKILLTAB_PROBE%".to_owned()]);
+    #[cfg(unix)]
+    let (program, args) = ("sh", vec!["-c".to_owned(), "echo $SKILLTAB_PROBE".to_owned()]);
+    let command = ExternalCommand { program: program.into(), args, cwd: None, env: probe };
+    assert_eq!(SystemOs.run(&command).unwrap(), "from-the-command");
 }
 
 #[test]

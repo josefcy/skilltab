@@ -20,6 +20,7 @@ use crate::model::*;
 use crate::scan::{content_hash, still_link_to};
 use crate::setup::ExportInput;
 use sha1::{Digest, Sha1};
+use std::ffi::OsString;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -352,9 +353,24 @@ pub(crate) trait Os: Send + Sync {
     fn recycle(&self, dir: &RealDir) -> io::Result<()>;
     /// Runs the command to completion and returns its output.
     fn run(&self, command: &ExternalCommand) -> io::Result<String>;
+    /// Whether a program of this name can be found where `run` would look for it.
+    fn find_tool(&self, program: &str) -> bool;
 }
 
 pub(crate) struct SystemOs;
+
+/// PATH, then the folders a GUI launched app misses because it starts with a short PATH.
+fn tool_dirs(path: Option<OsString>, home: Option<&Path>) -> Vec<PathBuf> {
+    path.iter().flat_map(std::env::split_paths).chain(sys::extra_tool_dirs(home)).collect()
+}
+
+fn real_tool_dirs() -> Vec<PathBuf> {
+    tool_dirs(std::env::var_os("PATH"), std::env::var_os("HOME").map(PathBuf::from).as_deref())
+}
+
+fn has_tool(dir: &Path, program: &str) -> bool {
+    sys::tool_names(program).iter().any(|name| sys::is_executable(&dir.join(name)))
+}
 
 impl Os for SystemOs {
     fn recycle(&self, dir: &RealDir) -> io::Result<()> {
@@ -362,12 +378,17 @@ impl Os for SystemOs {
     }
 
     fn run(&self, c: &ExternalCommand) -> io::Result<String> {
+        let path = std::env::join_paths(real_tool_dirs()).ok().filter(|_| cfg!(unix));
         let command = |program: &str| {
             let mut cmd = std::process::Command::new(program);
             cmd.args(&c.args).stdin(std::process::Stdio::null());
             if let Some(dir) = &c.cwd {
                 cmd.current_dir(dir);
             }
+            if let Some(path) = &path {
+                cmd.env("PATH", path);
+            }
+            cmd.envs(c.env.iter().map(|(k, v)| (k, v)));
             cmd
         };
         let spawned = command(&c.program).output();
@@ -386,6 +407,10 @@ impl Os for SystemOs {
             return Err(io::Error::other(format!("{} exited with {}: {text}", c.display(), out.status)));
         }
         Ok(text)
+    }
+
+    fn find_tool(&self, program: &str) -> bool {
+        real_tool_dirs().iter().any(|dir| has_tool(dir, program))
     }
 }
 

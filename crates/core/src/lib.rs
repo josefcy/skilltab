@@ -382,6 +382,9 @@ mod tests {
             fn run(&self, c: &harness::ExternalCommand) -> std::io::Result<String> {
                 self.0.run(c)
             }
+            fn find_tool(&self, program: &str) -> bool {
+                self.0.find_tool(program)
+            }
         }
 
         fn open(h: &Home) -> (Skilltab, Arc<FakeOs>) {

@@ -5,7 +5,7 @@ use crate::fsutil::strip_verbatim;
 use crate::model::{LinkPath, RealDir};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(crate) const TRASH_NAME: &str = "Recycle Bin";
 
@@ -118,4 +118,18 @@ fn set_mount_point(entry: &Path, target: &Path) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// The file names a program can have on PATH. `npx` is `npx.cmd`, which only a `.cmd` search finds.
+pub(super) fn tool_names(program: &str) -> Vec<String> {
+    ["exe", "cmd", "bat"].iter().map(|ext| format!("{program}.{ext}")).collect()
+}
+
+pub(super) fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// A GUI app on Windows gets the user's whole PATH, so nothing is added.
+pub(super) fn extra_tool_dirs(_home: Option<&Path>) -> Vec<PathBuf> {
+    Vec::new()
 }
