@@ -81,4 +81,16 @@ Only markdown is carried. `settings.json`, `config.toml`, `hooks.json`, auth fil
 - It never replaces a real folder, a link that points elsewhere or a config file that differs.
 - It does not sign in. The plan lists that as the last step for you.
 
+## Where Export differs from backup.ps1
+
+Export writes the same manifest and the same config files as `backup.ps1` for a normal machine. These are the differences, and each one is on purpose.
+
+- **Enabled plugins.** The script's `-eq $true` also accepts `1` and `"true"` in `enabledPlugins`. Claude Code reads a real boolean, so a plugin with `1` or `"true"` is not enabled there. skilltab accepts only the JSON boolean `true`, and leaves the other two out.
+- **Sources that differ in case.** The script keys a case-insensitive hashtable, so `Acme/Skills` and `acme/skills` are one source. skilltab does the same. The script keeps the spelling of the first skill in the lock's key order. skilltab reads the lock as a parsed object, which does not keep that order, so it keeps the spelling of the first skill by name. The two agree unless the same source is spelled two ways in one lock.
+- **A lock entry with no usable source.** An entry with a `sourceUrl` (any type but github) or a `sourceBaseUrl` (well-known) and no `source` is kept and grouped under that url, as the script does. An entry with neither makes the script stop with an error. skilltab leaves the skill out and names it in a note on the plan.
+- **A refused or unreadable input.** The script copies every file it can and exits 1 when one is refused. skilltab plans nothing when any file matches a secret pattern or any input cannot be read, so the folder is never left half written.
+- **Links.** The script follows a link in the repo folder. skilltab refuses a setup folder where `manifest.json` or anything under `config/` is a link.
+
+Restore has no script to compare with, and it has one rule of its own. A `<name>.from-backup` file that already exists and differs from the setup copy is never replaced, because you may have edited it. Only an absent one is written.
+
 The golden example is `crates/core/tests/fixtures/setup/`. Its `README.md` says how the expected files were made.
