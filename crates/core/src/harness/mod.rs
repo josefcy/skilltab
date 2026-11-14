@@ -6,7 +6,7 @@
 
 use crate::fsutil;
 use crate::model::{
-    norm_key, Arg, HarnessId, InstallScope, InvocationKey, MarketplaceSource, Ownership, ProjectRoot, Timestamp,
+    norm_key, Arg, HarnessId, InstallScope, InvocationKey, MarketplaceSource, Ownership, ProjectRoot, SetupManifest, Timestamp,
 };
 use crate::Env;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -71,6 +71,12 @@ pub trait Harness: Sync {
     fn read_plugins(&self, _env: &Env) -> Result<PluginRecord, String> {
         Ok(PluginRecord::default())
     }
+
+    /// For each marketplace and plugin the manifest wants, whether this harness has it or which command adds it.
+    /// Marketplaces come before plugins. The default has none, so a harness without plugins plans nothing.
+    fn plugin_ops(&self, _want: &SetupManifest, _have: &PluginRecord) -> Vec<PluginOp> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------- setup
@@ -93,6 +99,8 @@ pub struct HarnessSetup {
     pub tools: &'static [&'static str],
     /// One sentence for the step Restore cannot do for the user.
     pub sign_in: Option<&'static str>,
+    /// Where to get `tools`, as a sentence, for the blocker a missing one raises.
+    pub install_hint: Option<&'static str>,
 }
 
 /// A file or a folder of files, relative to `HarnessSetup::config_home`. Markdown only, because the
@@ -113,8 +121,19 @@ pub struct PluginRecord {
     /// "name@marketplace" of every plugin enabled in the user settings.
     pub enabled: BTreeSet<Arg>,
     /// "name@marketplace" of every installed plugin. Restore skips these.
-    #[allow(dead_code)]
     pub installed: BTreeSet<String>,
+}
+
+/// One marketplace or plugin a setup wants, and whether this machine has it.
+pub struct PluginOp {
+    /// A noun phrase such as "plugin plug@alpha", for the plan's notes.
+    pub label: String,
+    pub state: PluginState,
+}
+
+pub enum PluginState {
+    Present,
+    Missing(ExternalCommand),
 }
 
 #[cfg(test)]
@@ -130,6 +149,24 @@ fn only_markdown_is_ever_carried_into_a_backup() {
             }
         }
         assert!(setup.carry.is_empty() || setup.config_home.starts_with('.'), "{}", h.label());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_plugin_command_only_runs_a_tool_its_harness_declares() {
+    let want = SetupManifest::parse(
+        r#"{"marketplaces":[{"name":"m","source":{"source":"github","repo":"a/b"}}],"claudePlugins":["p@m"]}"#,
+    )
+    .unwrap();
+    for h in registry() {
+        let tools = h.setup().tools;
+        for op in h.plugin_ops(&want, &PluginRecord::default()) {
+            match op.state {
+                PluginState::Missing(c) => assert!(tools.contains(&c.program.as_str()), "{} runs {}", h.label(), c.program),
+                PluginState::Present => panic!("{} reports {} present on an empty machine", h.label(), op.label),
+            }
+        }
     }
 }
 

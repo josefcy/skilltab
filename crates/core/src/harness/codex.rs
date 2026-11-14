@@ -72,6 +72,7 @@ impl Harness for Codex {
             skills_cli_agent: Some("codex"),
             tools: &[],
             sign_in: Some("Run codex login."),
+            install_hint: None,
         }
     }
 

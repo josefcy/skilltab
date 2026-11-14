@@ -90,7 +90,41 @@ impl Harness for ClaudeCode {
             skills_cli_agent: Some("claude-code"),
             tools: &["claude"],
             sign_in: Some("Run claude and follow the login prompt."),
+            install_hint: Some("Install Claude Code from https://claude.com/claude-code."),
         }
+    }
+
+    /// A marketplace is present when `known_marketplaces.json` names it, whatever its source type, and a plugin
+    /// when `installed_plugins.json` does.
+    fn plugin_ops(&self, want: &SetupManifest, have: &PluginRecord) -> Vec<PluginOp> {
+        let command = |args: &[&str], target: &str| ExternalCommand {
+            program: "claude".to_owned(),
+            args: args.iter().map(|a| (*a).to_owned()).chain([target.to_owned()]).collect(),
+            cwd: None,
+            env: Vec::new(),
+        };
+        let marketplaces = want.marketplaces.iter().map(|(name, source)| {
+            let known = have.marketplaces.contains_key(name) || have.uncarried.iter().any(|(n, _)| n == name.as_str());
+            let state = if known {
+                PluginState::Present
+            } else {
+                let from = match source {
+                    MarketplaceSource::Github { repo } => repo.as_str(),
+                    MarketplaceSource::Git { url } => url.as_str(),
+                };
+                PluginState::Missing(command(&["plugin", "marketplace", "add"], from))
+            };
+            PluginOp { label: format!("marketplace {}", name.as_str()), state }
+        });
+        let plugins = want.plugins.iter().map(|plugin| {
+            let state = if have.installed.contains(plugin.as_str()) {
+                PluginState::Present
+            } else {
+                PluginState::Missing(command(&["plugin", "install"], plugin.as_str()))
+            };
+            PluginOp { label: format!("plugin {}", plugin.as_str()), state }
+        });
+        marketplaces.chain(plugins).collect()
     }
 
     /// Reads the same three files `backup.ps1` reads, and the installed set for Restore. Only user
@@ -554,5 +588,54 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("known_marketplaces.json"), r#"{"m":{"source":{"source":"github","repo":"--evil"}}}"#).unwrap();
         assert!(ClaudeCode.read_plugins(&env(t.path())).unwrap_err().contains("\"m\""));
+    }
+
+    fn wanted() -> SetupManifest {
+        SetupManifest::parse(
+            r#"{"marketplaces":[
+                {"name":"alpha","source":{"source":"github","repo":"acme/alpha"}},
+                {"name":"beta","source":{"source":"git","url":"https://example.com/acme/beta.git"}}],
+              "claudePlugins":["plug@alpha","other@beta"]}"#,
+        )
+        .unwrap()
+    }
+
+    fn describe(ops: &[PluginOp]) -> Vec<String> {
+        ops.iter()
+            .map(|op| match &op.state {
+                PluginState::Present => format!("{}: present", op.label),
+                PluginState::Missing(c) => format!("{}: {}", op.label, c.display()),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plugin_ops_name_the_claude_command_for_everything_missing_marketplaces_first() {
+        assert_eq!(
+            describe(&ClaudeCode.plugin_ops(&wanted(), &PluginRecord::default())),
+            [
+                "marketplace alpha: claude plugin marketplace add acme/alpha",
+                "marketplace beta: claude plugin marketplace add https://example.com/acme/beta.git",
+                "plugin other@beta: claude plugin install other@beta",
+                "plugin plug@alpha: claude plugin install plug@alpha",
+            ]
+        );
+    }
+
+    #[test]
+    fn plugin_ops_skip_what_the_records_already_hold() {
+        let mut have = PluginRecord::default();
+        have.marketplaces.insert(Arg::parse("alpha").unwrap(), MarketplaceSource::Github { repo: Arg::parse("acme/alpha").unwrap() });
+        have.uncarried.push(("beta".to_owned(), "directory".to_owned()));
+        have.installed.insert("plug@alpha".to_owned());
+        assert_eq!(
+            describe(&ClaudeCode.plugin_ops(&wanted(), &have)),
+            [
+                "marketplace alpha: present",
+                "marketplace beta: present",
+                "plugin other@beta: claude plugin install other@beta",
+                "plugin plug@alpha: present",
+            ]
+        );
     }
 }
