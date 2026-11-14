@@ -13,6 +13,12 @@ pub(crate) struct FakeOs {
     pub tools: BTreeSet<String>,
 }
 
+impl FakeOs {
+    pub(crate) fn with_tools(tools: &[&str]) -> FakeOs {
+        FakeOs { tools: tools.iter().map(|t| (*t).to_owned()).collect(), ..FakeOs::default() }
+    }
+}
+
 impl Os for FakeOs {
     fn recycle(&self, dir: &RealDir) -> io::Result<()> {
         let mut recycled = self.recycled.lock().unwrap();

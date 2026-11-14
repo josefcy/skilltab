@@ -4,6 +4,7 @@
 //! path. Everything else here reads files the harnesses and the skill lock name, never a path from the UI.
 
 mod manifest;
+mod restore;
 mod secret;
 
 use crate::fsutil;
@@ -17,6 +18,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub(crate) use restore::{read_restore, Entry, RestoreInput, Wanted, SKILLS_CLI};
 pub(crate) use secret::find_secret;
 
 /// An existing, absolute, canonical folder. Only `parse` makes one.
@@ -88,6 +90,11 @@ impl ConfigFile {
         join_rel(dir.config_dir().join(repo_name(self.home_dir)), &self.rel)
     }
 
+    /// Where the file lives on this machine, such as `<home>/.claude/rules/a.md`.
+    pub(crate) fn machine_path(&self, home: &Path) -> PathBuf {
+        join_rel(home.join(self.home_dir), &self.rel)
+    }
+
     pub(crate) fn same_file(&self, other: &ConfigFile) -> bool {
         self.home_dir == other.home_dir && self.rel == other.rel
     }
@@ -111,6 +118,10 @@ pub(crate) struct Problem {
 impl Problem {
     fn new(why: String) -> Problem {
         Problem { why, remedy: "Fix that, then plan the export again.".to_owned() }
+    }
+
+    fn for_restore(why: String) -> Problem {
+        Problem { why, remedy: "Fix that, then plan the restore again.".to_owned() }
     }
 }
 
