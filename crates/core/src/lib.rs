@@ -10,6 +10,7 @@ mod model;
 mod projects;
 mod provenance;
 mod scan;
+mod setup;
 #[cfg(test)]
 mod testutil;
 mod usage;

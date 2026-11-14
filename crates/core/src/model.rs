@@ -5,6 +5,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+mod setup;
+pub use setup::{Arg, FolderName, MarketplaceSource, SetupManifest};
+
 // ---------------------------------------------------------------- ids
 
 /// Harness id string such as "claude-code" or "codex". The only constructors are the
