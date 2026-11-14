@@ -18,8 +18,9 @@ use crate::harness::{registry, BundleOp, BundleRef, ExternalCommand};
 use crate::model::*;
 use crate::scan::{content_hash, still_link_to};
 use sha1::{Digest, Sha1};
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub(crate) use shelf::Shelf;
 pub(crate) use sys::TRASH_NAME;
@@ -55,6 +56,25 @@ pub(crate) struct Plan {
     pub blockers: Vec<Blocker>,
     /// Only a bulk delete fills this. Each skill here contributes no steps.
     pub skipped: Vec<Skipped>,
+    /// Plan lines that are neither a step nor a blocker: what is already in place, what needs the user's eye,
+    /// and what only the user can do afterwards.
+    pub notes: Vec<Note>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Note {
+    pub kind: NoteKind,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoteKind {
+    /// Already as wanted, so it has no step.
+    Present,
+    /// Left as it is, or left out, and the user should know.
+    Attention,
+    /// Something only the user can do after the plan runs.
+    Manual,
 }
 
 pub(crate) struct Skipped {
@@ -71,9 +91,23 @@ pub(crate) enum Step {
     /// Only a `RealDir` can be recycled, so a link never reaches the Recycle Bin or trash.
     Recycle { dir: RealDir, hash: ContentHash },
     Stash { dir: RealDir, hash: ContentHash, shelve: ShelfEntry, stash: PathBuf },
-    Relink { shelf: ShelfId, entry: PathBuf, target: PathBuf },
+    /// Creates `entry` as a link to `target`. `shelf` is the shelf entry it puts back, or None for a first link.
+    Link { entry: PathBuf, target: PathBuf, shelf: Option<ShelfId> },
     Unstash { shelf: ShelfId, stash: PathBuf, to: PathBuf },
     Run { command: ExternalCommand },
+    /// Writes `bytes` to `to` and creates its parent folders. `was` says what the planner saw there.
+    /// Over `Was::Absent` the file is created with `create_new`, so a file that appears later is never replaced.
+    /// Over `Was::Hash` it goes through a temp file in the same folder and a rename.
+    Write { to: PathBuf, bytes: Arc<[u8]>, was: Was },
+    /// Deletes one file, only while it still has the content the planner saw.
+    Delete { path: PathBuf, was: ContentHash },
+}
+
+/// What a `Write` expects to find at its destination.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Was {
+    Absent,
+    Hash(ContentHash),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,7 +148,7 @@ pub(crate) fn plan(snap: &Snapshot, shelf: &Shelf, action: ManageAction) -> Plan
 
 impl Plan {
     fn new(revision: u64, action: ManageAction) -> Plan {
-        Plan { revision, action, steps: Vec::new(), effects: Vec::new(), blockers: Vec::new(), skipped: Vec::new() }
+        Plan { revision, action, steps: Vec::new(), effects: Vec::new(), blockers: Vec::new(), skipped: Vec::new(), notes: Vec::new() }
     }
     fn block(&mut self, b: Blocker) {
         if !self.blockers.contains(&b) {
@@ -231,7 +265,7 @@ fn restore(snap: &Snapshot, id: &ShelfId, p: &mut Plan) {
                     remedy: "Reinstall the skill, then restore the link.".into(),
                 });
             }
-            p.steps.push(Step::Relink { shelf: e.id.clone(), entry: e.entry.clone(), target: target.clone() });
+            p.steps.push(Step::Link { entry: e.entry.clone(), target: target.clone(), shelf: Some(e.id.clone()) });
         }
         Held::Folder { stash } => p.steps.push(Step::Unstash { shelf: e.id.clone(), stash: stash.clone(), to: e.entry.clone() }),
     }
@@ -411,9 +445,11 @@ fn is_done(step: &Step) -> bool {
         Step::RemoveLink { link, .. } => !exists(link.as_path()),
         Step::Recycle { dir, .. } => !exists(dir.as_path()),
         Step::Stash { dir, stash, .. } => !exists(dir.as_path()) && exists(stash),
-        Step::Relink { entry, target, .. } => still_link_to(entry, target),
+        Step::Link { entry, target, .. } => still_link_to(entry, target),
         Step::Unstash { stash, to, .. } => !exists(stash) && exists(to),
         Step::Run { .. } => false,
+        Step::Write { to, bytes, .. } => std::fs::read(to).is_ok_and(|have| have == **bytes),
+        Step::Delete { path, .. } => !exists(path),
     }
 }
 
@@ -431,7 +467,7 @@ fn stale_reason(step: &Step) -> Option<String> {
         Step::RemoveLink { link, target, .. } => (!still_link_to(link.as_path(), target))
             .then(|| format!("{} no longer points to {}.", link.as_path().display(), target.display())),
         Step::Recycle { dir, hash } | Step::Stash { dir, hash, .. } => changed(dir, hash),
-        Step::Relink { entry, target, .. } => {
+        Step::Link { entry, target, .. } => {
             if exists(entry) {
                 Some(format!("Something is at {} now.", entry.display()))
             } else if !target.exists() {
@@ -450,6 +486,12 @@ fn stale_reason(step: &Step) -> Option<String> {
             }
         }
         Step::Run { .. } => None,
+        Step::Write { to, was: Was::Absent, .. } => exists(to).then(|| format!("Something is at {} now.", to.display())),
+        Step::Write { to, was: Was::Hash(hash), .. } | Step::Delete { path: to, was: hash } => match std::fs::read(to) {
+            Ok(have) if &ContentHash::of(&have) == hash => None,
+            Ok(_) => Some(format!("{} changed since the plan was made.", to.display())),
+            Err(_) => Some(format!("{} can no longer be read.", to.display())),
+        },
     }
 }
 
@@ -459,7 +501,7 @@ fn stamped(e: &ShelfEntry) -> ShelfEntry {
 
 fn run_step(step: &Step, shelf: &mut Shelf, os: &dyn Os, output: &mut Vec<String>) -> io::Result<StepResult> {
     match step {
-        Step::Relink { shelf: id, .. } | Step::Unstash { shelf: id, .. } if is_done(step) => {
+        Step::Link { shelf: Some(id), .. } | Step::Unstash { shelf: id, .. } if is_done(step) => {
             shelf.forget(id)?;
             return Ok(StepResult::Skipped);
         }
@@ -481,17 +523,46 @@ fn run_step(step: &Step, shelf: &mut Shelf, os: &dyn Os, output: &mut Vec<String
             }
             std::fs::rename(dir.as_path(), stash).map_err(|e| moved_error(e, stash))?;
         }
-        Step::Relink { shelf: id, entry, target } => {
+        Step::Link { entry, target, shelf: id } => {
+            if let Some(parent) = entry.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             sys::create_link(entry, target)?;
-            shelf.forget(id)?;
+            if let Some(id) = id {
+                shelf.forget(id)?;
+            }
         }
         Step::Unstash { shelf: id, stash, to } => {
             std::fs::rename(stash, to).map_err(|e| moved_error(e, to))?;
             shelf.forget(id)?;
         }
         Step::Run { command } => output.push(os.run(command)?),
+        Step::Write { to, bytes, was } => write_file(to, bytes, was)?,
+        Step::Delete { path, .. } => std::fs::remove_file(path)?,
     }
     Ok(StepResult::Done)
+}
+
+fn write_file(to: &Path, bytes: &[u8], was: &Was) -> io::Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match was {
+        Was::Absent => {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
+            file.write_all(bytes).inspect_err(|_| {
+                let _ = std::fs::remove_file(to);
+            })
+        }
+        Was::Hash(_) => {
+            let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let temp = to.with_file_name(format!(".{name}.skilltab-tmp"));
+            std::fs::write(&temp, bytes)?;
+            std::fs::rename(&temp, to).inspect_err(|_| {
+                let _ = std::fs::remove_file(&temp);
+            })
+        }
+    }
 }
 
 /// A rename cannot cross volumes. Copying and deleting instead would turn a cheap, atomic move into

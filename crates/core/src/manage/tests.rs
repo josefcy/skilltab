@@ -437,3 +437,122 @@ fn applying_a_bulk_delete_recycles_real_folders_only_and_leaves_what_it_did_not_
     assert!(h.p(".claude/skills/a").is_dir() && h.p(".claude/skills/keep").is_dir());
     assert!(shelf.entries().is_empty(), "a deleted skill is not shelved");
 }
+
+fn plan_of(steps: Vec<Step>) -> Plan {
+    let mut p = Plan::new(1, ManageAction::DeleteBodies(Vec::new()));
+    p.steps = steps;
+    p
+}
+
+fn write(to: &Path, bytes: &[u8], was: Was) -> Step {
+    Step::Write { to: to.to_path_buf(), bytes: Arc::from(bytes), was }
+}
+
+fn hash_of(bytes: &[u8]) -> Was {
+    Was::Hash(ContentHash::of(bytes))
+}
+
+#[test]
+fn a_new_file_is_written_with_its_parents_and_a_second_apply_skips_it() {
+    let h = Home::new();
+    let mut shelf = h.shelf();
+    let to = h.p("out/deep/a.txt");
+    let p = plan_of(vec![write(&to, b"one", Was::Absent)]);
+
+    assert_eq!(results(apply(&p, &mut shelf, &FakeOs::default())), vec![StepResult::Done]);
+    assert_eq!(fs::read(&to).unwrap(), b"one");
+    assert_eq!(results(apply(&p, &mut shelf, &FakeOs::default())), vec![StepResult::Skipped]);
+}
+
+#[test]
+fn a_write_over_absent_never_replaces_a_file_that_appeared_after_planning() {
+    let h = Home::new();
+    let mut shelf = h.shelf();
+    let to = h.p("out/a.txt");
+    let p = plan_of(vec![write(&to, b"mine", Was::Absent)]);
+    fs::create_dir_all(to.parent().unwrap()).unwrap();
+    fs::write(&to, b"theirs").unwrap();
+
+    let ApplyOutcome::Stale { reasons } = apply(&p, &mut shelf, &FakeOs::default()) else { panic!("expected Stale") };
+    assert!(reasons[0].contains("a.txt"), "{reasons:?}");
+    assert_eq!(fs::read(&to).unwrap(), b"theirs");
+}
+
+#[test]
+fn a_create_that_loses_the_race_fails_instead_of_overwriting() {
+    let h = Home::new();
+    let to = h.p("a.txt");
+    fs::write(&to, b"theirs").unwrap();
+
+    let e = write_file(&to, b"mine", &Was::Absent).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read(&to).unwrap(), b"theirs");
+}
+
+#[test]
+fn a_replacement_goes_through_a_temp_file_and_leaves_none_behind() {
+    let h = Home::new();
+    let mut shelf = h.shelf();
+    let to = h.p("out/a.txt");
+    fs::create_dir_all(to.parent().unwrap()).unwrap();
+    fs::write(&to, b"old").unwrap();
+    let p = plan_of(vec![write(&to, b"new", hash_of(b"old"))]);
+
+    assert_eq!(results(apply(&p, &mut shelf, &FakeOs::default())), vec![StepResult::Done]);
+    assert_eq!(fs::read(&to).unwrap(), b"new");
+    let left: Vec<_> = fs::read_dir(to.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(left, ["a.txt"]);
+}
+
+#[test]
+fn a_replacement_of_a_file_that_changed_since_planning_is_refused_and_nothing_is_written() {
+    let h = Home::new();
+    let mut shelf = h.shelf();
+    let (a, b) = (h.p("out/a.txt"), h.p("out/b.txt"));
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
+    fs::write(&a, b"old").unwrap();
+    let p = plan_of(vec![write(&b, b"fresh", Was::Absent), write(&a, b"new", hash_of(b"old"))]);
+    fs::write(&a, b"edited meanwhile").unwrap();
+
+    let ApplyOutcome::Stale { reasons } = apply(&p, &mut shelf, &FakeOs::default()) else { panic!("expected Stale") };
+    assert!(reasons[0].contains("a.txt"), "{reasons:?}");
+    assert_eq!(fs::read(&a).unwrap(), b"edited meanwhile");
+    assert!(!b.exists(), "a refused plan runs no step");
+}
+
+#[test]
+fn a_delete_removes_only_a_file_that_still_has_the_planned_content() {
+    let h = Home::new();
+    let mut shelf = h.shelf();
+    let path = h.p("out/a.txt");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"old").unwrap();
+    let step = Step::Delete { path: path.clone(), was: ContentHash::of(b"old") };
+
+    fs::write(&path, b"edited").unwrap();
+    assert!(matches!(apply(&plan_of(vec![step.clone()]), &mut shelf, &FakeOs::default()), ApplyOutcome::Stale { .. }));
+    assert!(path.exists());
+
+    fs::write(&path, b"old").unwrap();
+    let p = plan_of(vec![step]);
+    assert_eq!(results(apply(&p, &mut shelf, &FakeOs::default())), vec![StepResult::Done]);
+    assert!(!path.exists());
+    assert_eq!(results(apply(&p, &mut shelf, &FakeOs::default())), vec![StepResult::Skipped]);
+}
+
+#[test]
+fn a_first_link_creates_its_parents_and_a_second_apply_skips_it() {
+    let h = Home::new();
+    h.skill("repo/skills/own", "own");
+    let mut shelf = h.shelf();
+    let (entry, target) = (h.p(".claude/skills/own"), h.p("repo/skills/own"));
+    let p = plan_of(vec![Step::Link { entry: entry.clone(), target: target.clone(), shelf: None }]);
+
+    assert_eq!(results(apply(&p, &mut shelf, &FakeOs::default())), vec![StepResult::Done]);
+    assert!(still_link_to(&entry, &target));
+    assert_eq!(results(apply(&p, &mut shelf, &FakeOs::default())), vec![StepResult::Skipped]);
+
+    fs::remove_dir_all(&target).unwrap();
+    let again = plan_of(vec![Step::Link { entry: h.p(".agents/skills/own"), target, shelf: None }]);
+    assert!(matches!(apply(&again, &mut shelf, &FakeOs::default()), ApplyOutcome::Stale { .. }), "a link to nothing is refused");
+}

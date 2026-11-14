@@ -149,6 +149,14 @@ pub struct SkillBody {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ContentHash(pub [u8; 20]);
 
+impl ContentHash {
+    /// Hash of one file's bytes, for a step that expects a file to be unchanged.
+    pub(crate) fn of(bytes: &[u8]) -> ContentHash {
+        use sha1::{Digest, Sha1};
+        ContentHash(Sha1::digest(bytes).into())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Manifest {
     /// The frontmatter `name`, or the folder name when that is missing.

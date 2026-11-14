@@ -6,7 +6,7 @@
 //! so the UI renders what it is sent and filters on these fields without domain rules of its own.
 
 use crate::harness::BundleOp;
-use crate::manage::{ApplyOutcome, Blocker, Effect, ManageAction, Plan, Skipped, Step, StepResult, TRASH_NAME};
+use crate::manage::{ApplyOutcome, Blocker, Effect, ManageAction, Plan, Skipped, Step, StepResult, Was, TRASH_NAME};
 use crate::model::*;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -956,9 +956,11 @@ pub enum StepKind {
     RemoveLink,
     Recycle,
     Stash,
-    Relink,
+    Link,
     Unstash,
     Run,
+    Write,
+    Delete,
 }
 
 #[derive(Serialize, Type)]
@@ -1122,9 +1124,15 @@ fn step_view(s: &Step) -> StepView {
         ),
         Step::Recycle { dir, .. } => (StepKind::Recycle, recycle.as_str(), path_str(dir.as_path())),
         Step::Stash { dir, stash, .. } => (StepKind::Stash, "Move the folder onto skilltab's shelf", arrow(dir.as_path(), stash)),
-        Step::Relink { entry, target, .. } => (StepKind::Relink, "Recreate the link", arrow(entry, target)),
+        Step::Link { entry, target, shelf } => {
+            (StepKind::Link, if shelf.is_some() { "Recreate the link" } else { "Create the link" }, arrow(entry, target))
+        }
         Step::Unstash { stash, to, .. } => (StepKind::Unstash, "Move the folder back from the shelf", arrow(stash, to)),
         Step::Run { command } => (StepKind::Run, "Run this command", command.display()),
+        Step::Write { to, was, .. } => {
+            (StepKind::Write, if *was == Was::Absent { "Write a new file" } else { "Replace the file" }, path_str(to))
+        }
+        Step::Delete { path, .. } => (StepKind::Delete, "Delete the file", path_str(path)),
     };
     StepView { kind, text: text.to_owned(), detail }
 }
